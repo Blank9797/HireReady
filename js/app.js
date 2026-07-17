@@ -276,6 +276,9 @@ function renderHome() {
       2. Chiudi Ollama e riavvialo autorizzando questo sito:</div>
       <div class="cmd-row"><code>${esc(cmdOrigins)}</code>
         <button class="btn small ghost" onclick="App.copyText('${esc(cmdOrigins)}')">📋 Copia</button></div>
+      <div class="hint">Se vedi <code>address already in use</code>, Ollama è già acceso: chiudi prima l’app di Ollama
+      (icona nella barra menu → Quit) e rilancia il comando. Su Mac, in alternativa:
+      <code>launchctl setenv OLLAMA_ORIGINS "${esc(location.origin)}"</code> e poi riavvia l’app di Ollama.</div>
       <div class="hint">3. Premi “Riprova connessione”. Se il browser continua a bloccare (Chrome può impedire a un sito pubblico di raggiungere localhost),
       usa la versione locale: scarica l’app da GitHub e aprila con <code>python3 -m http.server 4190</code>.</div>`;
   const localHelp = `<div class="hint" style="margin-top:6px">L’app usa un LLM locale via Ollama (gratuito, nessun dato esce dal tuo computer).
