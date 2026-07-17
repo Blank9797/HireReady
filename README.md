@@ -21,6 +21,7 @@ Oltre ad allenarti, HireReady tiene traccia delle **candidature vere**: calendar
 ## Caratteristiche
 
 - Posizione e livello liberi (Junior / Mid / Senior / Lead), annuncio di lavoro opzionale per domande più mirate
+- Doppio motore AI: Ollama in locale (privacy totale) oppure qualsiasi API OpenAI-compatibile (Groq, OpenAI, Mistral…) con la tua chiave — indispensabile per la versione hostata
 - Stile recruiter configurabile: 😊 cordiale · 💼 professionale · 🔥 sotto pressione
 - Colloquio in italiano o in inglese; numero di domande configurabile
 - CV da PDF (estrazione locale con pdf.js), risposte a voce (dettatura) e domande lette ad alta voce

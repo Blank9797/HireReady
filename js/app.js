@@ -5,7 +5,8 @@ const LS_KEY = 'colloquio_sim_v1';
 
 function freshState() {
   return {
-    setup: { posizione: '', livello: 'Junior', cv: '', annuncio: '', lingua: 'it', stile: 'neutro', nCon: N_DOMANDE.conoscitivo, nTec: N_DOMANDE.tecnico, model: '', tts: false },
+    setup: { posizione: '', livello: 'Junior', cv: '', annuncio: '', lingua: 'it', stile: 'neutro', nCon: N_DOMANDE.conoscitivo, nTec: N_DOMANDE.tecnico, model: '', tts: false,
+      motore: 'ollama', apiUrl: 'https://api.groq.com/openai/v1', apiKey: '', apiModel: 'llama-3.3-70b-versatile' },
     profili: [], sessions: [], candidature: [], activeId: null, seq: 1,
   };
 }
@@ -125,6 +126,76 @@ async function checkOllama() {
     : 'Ollama non raggiungibile: avvia l’app di Ollama o esegui “ollama serve”';
 }
 
+// ── Motore API esterna (OpenAI-compatibile: Groq, OpenAI, Mistral, OpenRouter…) ──
+async function checkApi() {
+  if (!state.setup.apiKey.trim()) {
+    AI.ok = false; AI.models = [];
+    AI.err = 'Motore “API esterna”: incolla la tua chiave API (gratis su console.groq.com)';
+    return;
+  }
+  try {
+    const res = await fetch(state.setup.apiUrl.replace(/\/+$/, '') + '/models', {
+      headers: { Authorization: 'Bearer ' + state.setup.apiKey.trim() },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    AI.models = (data.data || []).map(m => m.id);
+    AI.ok = true; AI.err = null; AI.base = 'api';
+  } catch (e) {
+    AI.ok = false;
+    AI.err = 'API non raggiungibile o chiave non valida (' + (e.message || e) + ')';
+  }
+}
+
+async function apiChat(messages, { json = false, temperature = 0.7, onToken = null, model = null } = {}) {
+  const url = state.setup.apiUrl.replace(/\/+$/, '') + '/chat/completions';
+  const body = { model: model || state.setup.apiModel, messages, temperature, stream: !!onToken };
+  if (json) body.response_format = { type: 'json_object' };
+  App.abortCtrl = new AbortController();
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + state.setup.apiKey.trim() },
+    body: JSON.stringify(body),
+    signal: App.abortCtrl.signal,
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`API ${res.status}${t ? ': ' + t.slice(0, 140) : ''}`);
+  }
+  if (!onToken) {
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content ?? '';
+  }
+  // streaming SSE (righe "data: {...}")
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '', full = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      let line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (!line.startsWith('data:')) continue;
+      line = line.slice(5).trim();
+      if (!line || line === '[DONE]') continue;
+      try {
+        const j = JSON.parse(line);
+        const t = j.choices?.[0]?.delta?.content || '';
+        if (t) { full += t; onToken(full); }
+      } catch { /* riga parziale */ }
+    }
+  }
+  return full;
+}
+
+const usaApi = () => state.setup.motore === 'api';
+async function checkAI() { return usaApi() ? checkApi() : checkOllama(); }
+async function aiChat(messages, opts) { return usaApi() ? apiChat(messages, opts) : ollamaChat(messages, opts); }
+
 async function ollamaChat(messages, { json = false, temperature = 0.7, onToken = null, model = null } = {}) {
   const body = {
     model: model || state.setup.model,
@@ -173,7 +244,7 @@ async function callJSONRetry(messages, normalizer, opts = {}) {
   let lastErr = null;
   for (let i = 0; i < 2; i++) {
     try {
-      const txt = await ollamaChat(messages, { json: true, temperature: 0.2, ...opts });
+      const txt = await aiChat(messages, { json: true, temperature: 0.2, ...opts });
       const j = normalizer(parseJSON(txt));
       if (j) return j;
       lastErr = new Error('risposta del modello non interpretabile');
@@ -206,8 +277,9 @@ function normalizeSintesi(j) {
   return out.motivazione || out.punti_forza.length ? out : null;
 }
 
-// Modelli distinti per i giudici, se l'utente ne ha installati altri
+// Modelli distinti per i giudici, se l'utente ne ha installati altri (solo Ollama)
 function juryModels() {
+  if (usaApi()) return null;
   const main = state.setup.model;
   const altri = AI.models.filter(m => m !== main);
   if (!altri.length) return null;
@@ -240,7 +312,9 @@ function render() {
   });
   const pill = $('#ai-pill');
   pill.innerHTML = AI.ok
-    ? `<span class="dot ok"></span><span>AI locale attiva<br><b>${esc(state.setup.model)}</b></span>`
+    ? (usaApi()
+      ? `<span class="dot ok"></span><span>AI via API ☁️<br><b>${esc(state.setup.apiModel)}</b></span>`
+      : `<span class="dot ok"></span><span>AI locale attiva<br><b>${esc(state.setup.model)}</b></span>`)
     : `<span class="dot ko"></span><span>${esc(AI.err || 'AI non disponibile')}</span>`;
   const v = $('#view');
   switch (App.view) {
@@ -288,8 +362,11 @@ function renderHome() {
   const nOpts = n => Array.from({ length: 8 }, (_, i) => i + 3).map(x => `<option ${x === n ? 'selected' : ''}>${x}</option>`).join('');
   const profOpts = state.profili.map(p => `<option value="${p.id}">${esc(p.nome)}</option>`).join('');
   const cmdOrigins = `OLLAMA_ORIGINS="${location.origin}" ollama serve`;
-  const hostedHelp = `<div class="hint" style="margin-top:6px">
-      L’AI gira <b>sul tuo computer</b> via Ollama: la versione online funziona solo se autorizzi questo sito a parlare con il tuo Ollama.<br>
+  const hostedHelp = `<div class="hint" style="margin-top:8px;padding:8px 10px;background:var(--good-soft);border-radius:8px">
+      <b>✅ Via più semplice per la versione online:</b> qui sotto scegli motore “☁️ API esterna” e incolla una chiave
+      gratuita di Groq (console.groq.com/keys): funziona subito, da qualsiasi browser, senza Ollama.</div>
+      <div class="hint" style="margin-top:6px">
+      In alternativa, per usare l’Ollama <b>del tuo computer</b> dalla versione online:<br>
       1. Installa Ollama da ollama.com e scarica un modello: <code>ollama pull gemma3:4b</code><br>
       2. Chiudi Ollama e riavvialo autorizzando questo sito:</div>
       <div class="cmd-row"><code>${esc(cmdOrigins)}</code>
@@ -350,7 +427,21 @@ function renderHome() {
       ondragleave="this.classList.remove('drop-hover')"
       ondrop="App.dropCv(event)">${esc(s.cv)}</textarea>
     <div class="hint">Tutto resta sul tuo computer: l’AI gira in locale, niente cloud.</div>
-    ${AI.models.length > 1 ? `<label>Modello AI</label><select onchange="App.setModel(this.value)">${modOpts}</select>` : ''}
+    <label>Motore AI</label>
+    <div class="engine-row">
+      <label class="engine-opt ${!usaApi() ? 'sel' : ''}"><input type="radio" name="motoreAI" value="ollama" ${!usaApi() ? 'checked' : ''} onchange="App.setMotore('ollama')"> 🖥 Ollama (locale, privato)</label>
+      <label class="engine-opt ${usaApi() ? 'sel' : ''}"><input type="radio" name="motoreAI" value="api" ${usaApi() ? 'checked' : ''} onchange="App.setMotore('api')"> ☁️ API esterna (Groq / OpenAI…)</label>
+    </div>
+    ${usaApi() ? `<div class="api-box">
+      <div class="setup-grid">
+        <div><label>URL base (OpenAI-compatibile)</label><input value="${esc(s.apiUrl)}" onchange="App.setApiField('apiUrl',this.value)" placeholder="https://api.groq.com/openai/v1"></div>
+        <div><label>Modello</label><input value="${esc(s.apiModel)}" onchange="App.setApiField('apiModel',this.value)" list="api-models" placeholder="llama-3.3-70b-versatile">
+          <datalist id="api-models">${AI.models.slice(0, 40).map(m => `<option value="${esc(m)}">`).join('')}</datalist></div>
+      </div>
+      <label>Chiave API</label><input type="password" value="${esc(s.apiKey)}" onchange="App.setApiField('apiKey',this.value)" placeholder="incolla qui la chiave — resta solo nel tuo browser">
+      <div class="hint">Chiave gratuita su <b>console.groq.com/keys</b>. La chiave viene salvata solo in questo browser e usata solo per parlare con l’API che hai scelto.</div>
+    </div>`
+    : (AI.models.length > 1 ? `<div style="max-width:340px"><label>Modello Ollama</label><select onchange="App.setModel(this.value)">${modOpts}</select></div>` : '')}
     <div class="actions-bar">
       <button type="submit" class="btn" ${AI.ok ? '' : 'disabled'}>🚀 Inizia la simulazione</button>
       <button type="button" class="btn ghost" onclick="App.salvaProfilo(event)">💾 Salva come profilo</button>
@@ -358,7 +449,16 @@ function renderHome() {
   </form>`;
 }
 
-App.retryAI = async () => { AI.err = 'Verifica in corso…'; render(); await checkOllama(); render(); };
+App.retryAI = async () => { AI.err = 'Verifica in corso…'; render(); await checkAI(); render(); };
+App.setMotore = async m => {
+  state.setup.motore = m; save();
+  AI.err = 'Verifica in corso…'; AI.ok = false; render();
+  await checkAI(); render();
+};
+App.setApiField = async (campo, valore) => {
+  state.setup[campo] = valore.trim(); save();
+  if (usaApi()) { await checkAI(); render(); }
+};
 App.copyText = text => {
   const done = () => toast('Copiato ✓');
   if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
@@ -695,7 +795,7 @@ async function nextTurno(tipo) {
   render();
   try {
     const messages = [{ role: 'system', content: buildIntervistaSystem(tipo, sess) }, ...fase.transcript];
-    const content = await ollamaChat(messages, {
+    const content = await aiChat(messages, {
       temperature: 0.7,
       onToken: full => {
         const el = $('#stream-bubble');
@@ -1128,7 +1228,7 @@ App.handleImport = ev => {
       if (!s.setup || !Array.isArray(s.sessions)) throw new Error('formato');
       localStorage.setItem(LS_KEY, JSON.stringify(s));
       state = loadState();
-      render(); checkOllama().then(render);
+      render(); checkAI().then(render);
       toast('Dati importati ✓');
     } catch { toast('File non valido'); }
   };
@@ -1139,7 +1239,7 @@ App.resetData = () => {
   if (!confirm('Azzerare tutte le simulazioni, i profili e il CV salvato?')) return;
   state = freshState(); save();
   App.view = 'home'; render();
-  checkOllama().then(render);
+  checkAI().then(render);
   toast('Dati azzerati');
 };
 
@@ -1514,7 +1614,7 @@ window.App = App;
 window.nextTurno = nextTurno;
 window.valuta = valuta;
 render();
-checkOllama().then(render);
+checkAI().then(render);
 // Service worker solo in locale: sulla versione hostata Chrome ha un bug per
 // cui le richieste verso la rete locale (Ollama) da pagine controllate da un
 // service worker restano appese dopo il connect. Se un SW era già registrato
