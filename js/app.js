@@ -85,10 +85,16 @@ function normalizeEval(j, listKeys) {
 const HOSTED = !['localhost', '127.0.0.1', ''].includes(location.hostname);
 const AI = { ok: false, base: null, models: [], err: 'Verifica in corso…' };
 
+// Con l'app hostata, Chrome 138+ blocca le richieste verso la rete locale
+// senza un permesso esplicito: dichiarare targetAddressSpace fa comparire il
+// popup "Consenti accesso alla rete locale" invece di fallire in silenzio.
+// Gli altri browser ignorano l'opzione.
+const FETCH_LOCAL = HOSTED ? { targetAddressSpace: 'local' } : {};
+
 async function checkOllama() {
   for (const b of ['http://localhost:11434', 'http://127.0.0.1:11434']) {
     try {
-      const res = await fetch(`${b}/api/tags`, { signal: AbortSignal.timeout(2500) });
+      const res = await fetch(`${b}/api/tags`, { signal: AbortSignal.timeout(5000), ...FETCH_LOCAL });
       if (!res.ok) continue;
       const data = await res.json();
       if (!Array.isArray(data.models)) continue;
@@ -122,6 +128,7 @@ async function ollamaChat(messages, { json = false, temperature = 0.7, onToken =
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     signal: App.abortCtrl.signal,
+    ...FETCH_LOCAL,
   });
   if (!res.ok) throw new Error(`Ollama ha risposto ${res.status}`);
   if (!onToken) {
@@ -279,8 +286,9 @@ function renderHome() {
       <div class="hint">Se vedi <code>address already in use</code>, Ollama è già acceso: chiudi prima l’app di Ollama
       (icona nella barra menu → Quit) e rilancia il comando. Su Mac, in alternativa:
       <code>launchctl setenv OLLAMA_ORIGINS "${esc(location.origin)}"</code> e poi riavvia l’app di Ollama.</div>
-      <div class="hint">3. Premi “Riprova connessione”. Se il browser continua a bloccare (Chrome può impedire a un sito pubblico di raggiungere localhost),
-      usa la versione locale: scarica l’app da GitHub e aprila con <code>python3 -m http.server 4190</code>.</div>`;
+      <div class="hint">3. Premi “Riprova connessione”. <b>Se Chrome mostra il popup “Consentire l’accesso alla rete locale?”, premi Consenti.</b>
+      Se non compare: icona a sinistra dell’indirizzo → Impostazioni sito → “Accesso alla rete locale” → Consenti, poi ricarica.
+      In alternativa usa la versione locale: scarica l’app da GitHub e aprila con <code>python3 -m http.server 4190</code>.</div>`;
   const localHelp = `<div class="hint" style="margin-top:6px">L’app usa un LLM locale via Ollama (gratuito, nessun dato esce dal tuo computer).
       Installa Ollama da ollama.com, poi esegui <code>ollama pull gemma3:4b</code>.</div>`;
   const aiWarn = !AI.ok ? `<div class="card" style="margin-bottom:16px;border-color:var(--crit)">
