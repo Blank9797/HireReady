@@ -88,8 +88,19 @@ const AI = { ok: false, base: null, models: [], err: 'Verifica in corso…' };
 // Con l'app hostata, Chrome 138+ blocca le richieste verso la rete locale
 // senza un permesso esplicito: dichiarare targetAddressSpace fa comparire il
 // popup "Consenti accesso alla rete locale" invece di fallire in silenzio.
-// Gli altri browser ignorano l'opzione.
-const FETCH_LOCAL = HOSTED ? { targetAddressSpace: 'local' } : {};
+// Nota: per localhost il valore giusto è 'loopback' (Chrome recenti); i Chrome
+// più vecchi usavano 'local'. Rileviamo quello accettato; gli altri browser
+// ignorano l'opzione.
+let FETCH_LOCAL = {};
+if (HOSTED) {
+  for (const tas of ['loopback', 'local']) {
+    try {
+      new Request('http://localhost/', { targetAddressSpace: tas });
+      FETCH_LOCAL = { targetAddressSpace: tas };
+      break;
+    } catch { /* enum non supportato: prova il successivo */ }
+  }
+}
 
 async function checkOllama() {
   for (const b of ['http://localhost:11434', 'http://127.0.0.1:11434']) {
@@ -1504,6 +1515,16 @@ window.nextTurno = nextTurno;
 window.valuta = valuta;
 render();
 checkOllama().then(render);
+// Service worker solo in locale: sulla versione hostata Chrome ha un bug per
+// cui le richieste verso la rete locale (Ollama) da pagine controllate da un
+// service worker restano appese dopo il connect. Se un SW era già registrato
+// (versioni precedenti), lo rimuoviamo.
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  if (HOSTED) {
+    navigator.serviceWorker.getRegistrations()
+      .then(rs => rs.forEach(r => r.unregister()))
+      .catch(() => {});
+  } else {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
 }
