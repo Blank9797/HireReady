@@ -284,6 +284,51 @@ textarea.drop-hover { outline: 2px dashed var(--accent); outline-offset: 2px; }
 .qd-body p { margin: 6px 0; }
 .qd-model { background: var(--accent-soft); border-radius: 8px; padding: 8px 10px; }
 
+/* ── Tracker colloqui reali ── */
+.back-link { background: none; border: none; color: var(--accent-strong); font-weight: 650; padding: 0; margin-bottom: 14px; font-size: 14px; cursor: pointer; }
+.form-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+h2.sez { font-size: 15px; color: var(--ink-2); margin: 20px 0 10px; }
+
+.cal-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.cal-head h2 { font-size: 16px; color: var(--ink); }
+.cal-wrap { overflow-x: auto; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; min-width: 560px; }
+.cal-dow { text-align: center; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; padding-bottom: 2px; }
+.cal-cell { min-height: 72px; background: var(--page); border: 1px solid var(--grid); border-radius: 8px; padding: 4px 5px; overflow: hidden; }
+.cal-cell.other { opacity: .4; }
+.cal-cell.today { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cal-day { font-size: 11px; color: var(--muted); font-weight: 700; }
+.cal-ev {
+  display: block; background: var(--accent-soft); color: var(--accent-strong);
+  border-radius: 5px; padding: 1px 5px; margin-top: 2px; font-size: 10.5px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+}
+.cal-ev.past { opacity: .55; }
+.cal-more { font-size: 10px; color: var(--muted); font-weight: 700; }
+
+table.cmp { width: 100%; border-collapse: collapse; }
+table.cmp th { text-align: left; font-size: 11.5px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); padding: 6px 10px; border-bottom: 1px solid var(--grid); }
+table.cmp td { padding: 9px 10px; border-bottom: 1px solid var(--grid); font-size: 13.5px; vertical-align: middle; }
+table.cmp tbody tr { cursor: pointer; }
+table.cmp tbody tr:hover { background: var(--page); }
+table.cmp tbody tr:last-child td { border-bottom: none; }
+.td-sub { color: var(--muted); font-size: 12px; }
+
+.memo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+.star-btn { background: none; border: none; font-size: 24px; color: var(--baseline); padding: 0 2px; line-height: 1; }
+.star-btn.on { color: var(--warn); }
+.star-btn:hover { color: var(--warn-text); }
+
+.ev-list { margin: 0; padding: 0; }
+.ev-list li.ev-row { list-style: none; display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--grid); align-items: flex-start; }
+.ev-list li.ev-row:last-child { border-bottom: none; }
+.ev-when { font-size: 12px; color: var(--muted); font-weight: 650; min-width: 76px; line-height: 1.35; }
+.ev-when.next { color: var(--accent-strong); }
+.ev-body { flex: 1; font-size: 13.5px; }
+.ev-body .td-sub { display: block; margin-top: 2px; }
+.ev-actions { display: flex; gap: 4px; }
+.ev-row.done .ev-body { text-decoration: line-through; opacity: .55; }
+
 /* ── Stampa report ── */
 @media print {
   .sidebar, .no-print, .actions-bar, #toast { display: none !important; }
@@ -303,7 +348,7 @@ textarea.drop-hover { outline: 2px dashed var(--accent); outline-offset: 2px; }
   .nav-btn { width: auto; margin-bottom: 0; padding: 8px 10px; }
   .sidebar-footer { margin-top: 0; margin-left: auto; flex-direction: row; }
   .main { padding: 18px 14px 50px; }
-  .setup-grid, .eval-lists { grid-template-columns: 1fr; }
+  .setup-grid, .eval-lists, .memo-grid, .form-2col { grid-template-columns: 1fr; }
   .setup-grid4 { grid-template-columns: 1fr 1fr; }
   .bubble { max-width: 92%; }
 }

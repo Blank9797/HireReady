@@ -16,6 +16,7 @@
       <div class="logo">Hire<span>Ready</span></div>
       <div class="logo-sub">Allenati con un recruiter AI in locale</div>
       <button class="nav-btn" data-view="sim" onclick="App.goSim()">🎯 Simulazione</button>
+      <button class="nav-btn" data-view="colloqui" onclick="App.go('colloqui')">📅 Colloqui</button>
       <button class="nav-btn" data-view="storico" onclick="App.go('storico')">🕘 Storico</button>
       <div class="ai-pill" id="ai-pill"><span class="dot ko"></span><span>Verifica AI…</span></div>
       <div class="sidebar-footer">
@@ -28,6 +29,7 @@
     </aside>
     <main class="main" id="view"></main>
   </div>
+  <div id="modal-root"></div>
   <div id="toast"></div>
   <script src="js/vendor/pdf.min.js"></script>
   <script src="js/prompts.js"></script>

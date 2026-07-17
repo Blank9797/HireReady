@@ -6,7 +6,7 @@ const LS_KEY = 'colloquio_sim_v1';
 function freshState() {
   return {
     setup: { posizione: '', livello: 'Junior', cv: '', annuncio: '', lingua: 'it', stile: 'neutro', nCon: N_DOMANDE.conoscitivo, nTec: N_DOMANDE.tecnico, model: '', tts: false },
-    profili: [], sessions: [], activeId: null, seq: 1,
+    profili: [], sessions: [], candidature: [], activeId: null, seq: 1,
   };
 }
 function loadState() {
@@ -19,6 +19,7 @@ function loadState() {
         const d = freshState().setup;
         s.setup = { ...d, ...s.setup };
         s.profili = s.profili || [];
+        s.candidature = s.candidature || [];
         return s;
       }
     }
@@ -210,6 +211,7 @@ function render() {
     const v = b.dataset.view;
     b.classList.toggle('active',
       (v === 'sim' && ['home', 'sim'].includes(App.view)) ||
+      (v === 'colloqui' && ['colloqui', 'candidatura'].includes(App.view)) ||
       (v === 'storico' && ['storico', 'report'].includes(App.view)));
   });
   const pill = $('#ai-pill');
@@ -222,6 +224,8 @@ function render() {
     case 'sim': v.innerHTML = renderSim(); break;
     case 'storico': v.innerHTML = renderStorico(); break;
     case 'report': v.innerHTML = renderReportView(); break;
+    case 'colloqui': v.innerHTML = renderColloqui(); break;
+    case 'candidatura': v.innerHTML = renderCandidatura(); break;
   }
   const msgs = $('#chat-msgs');
   if (msgs) msgs.scrollTop = msgs.scrollHeight;
@@ -1095,6 +1099,372 @@ App.resetData = () => {
   checkOllama().then(render);
   toast('Dati azzerati');
 };
+
+// ══════════════════════════════════════════════════════════════════════════
+// TRACKER COLLOQUI REALI: calendario, candidature, memo decisionale
+// ══════════════════════════════════════════════════════════════════════════
+
+const STAGE_REALI = [
+  { id: 'candidatura', label: 'Candidatura inviata', short: 'Candidatura', icon: '📨' },
+  { id: 'screening',   label: 'Screening / primo contatto', short: 'Screening', icon: '📞' },
+  { id: 'conoscitivo', label: 'Colloquio conoscitivo', short: 'Conoscitivo', icon: '💬' },
+  { id: 'tecnico',     label: 'Colloquio tecnico', short: 'Tecnico', icon: '🧪' },
+  { id: 'finale',      label: 'Colloquio finale', short: 'Finale', icon: '🏁' },
+  { id: 'offerta',     label: 'Offerta ricevuta', short: 'Offerta', icon: '📄' },
+  { id: 'chiusa',      label: 'Chiusa', short: 'Chiusa', icon: '🔒' },
+];
+const ESITI_REALI = {
+  accettata: { label: '🎉 Offerta accettata', cls: 'ok' },
+  rifiutata: { label: 'Ho rifiutato l’offerta', cls: 'neutral' },
+  scartato:  { label: 'Non selezionato', cls: 'bad' },
+  ritirata:  { label: 'Mi sono ritirato/a', cls: 'neutral' },
+};
+const TIPI_EVENTO = [
+  { id: 'screening',   label: 'Call HR / screening', icon: '📞' },
+  { id: 'conoscitivo', label: 'Colloquio conoscitivo', icon: '💬' },
+  { id: 'tecnico',     label: 'Colloquio tecnico', icon: '🧪' },
+  { id: 'finale',      label: 'Colloquio finale', icon: '🏁' },
+  { id: 'offerta',     label: 'Discussione offerta', icon: '📄' },
+  { id: 'altro',       label: 'Altro appuntamento', icon: '📌' },
+];
+const MODALITA = ['—', 'Full remote', 'Ibrido', 'On-site'];
+const tipoEvento = id => TIPI_EVENTO.find(t => t.id === id) || TIPI_EVENTO.at(-1);
+const stageReale = id => STAGE_REALI.find(s => s.id === id) || STAGE_REALI[0];
+const getCandR = id => state.candidature.find(c => c.id === id) || null;
+const fmtTime = ts => new Date(ts).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+const fmtGiorno = ts => new Date(ts).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' });
+
+function badgeCandR(c) {
+  if (c.stage === 'chiusa') {
+    const e = ESITI_REALI[c.esito] || { label: 'Chiusa', cls: 'neutral' };
+    return `<span class="badge ${e.cls}">${e.label}</span>`;
+  }
+  const s = stageReale(c.stage);
+  return `<span class="badge stage">${s.icon} ${s.label}</span>`;
+}
+const prossimoEvento = c => c.eventi.filter(e => e.ts >= Date.now() - 2 * 3600000 && !e.done)
+  .sort((a, b) => a.ts - b.ts)[0] || null;
+
+// ── Modale ──
+function openModal(html) {
+  $('#modal-root').innerHTML = `<div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+    <div class="modal">${html}</div></div>`;
+  const f = $('#modal-root').querySelector('input,select,textarea');
+  if (f) f.focus();
+}
+function closeModal() { $('#modal-root').innerHTML = ''; }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+// ── Vista Colloqui: calendario + elenco ──
+function renderColloqui() {
+  if (App.calY == null) { const d = new Date(); App.calY = d.getFullYear(); App.calM = d.getMonth(); }
+  const cs = state.candidature;
+  const attive = cs.filter(c => c.stage !== 'chiusa')
+    .sort((a, b) => (prossimoEvento(a)?.ts ?? Infinity) - (prossimoEvento(b)?.ts ?? Infinity));
+  const chiuse = cs.filter(c => c.stage === 'chiusa').sort((a, b) => b.createdAt - a.createdAt);
+
+  if (!cs.length) {
+    return `<div class="view-head"><div><h1>I tuoi colloqui</h1>
+      <div class="sub">Tieni traccia delle candidature reali: appuntamenti, stato e info per decidere</div></div></div>
+    <div class="card empty"><div class="e-icon">📅</div><h3>Nessuna candidatura registrata</h3>
+      <p>Aggiungi le posizioni per cui ti stai candidando davvero: calendario dei colloqui,<br>stato di avanzamento e memo con RAL, benefit e tutto ciò che ti serve per scegliere.</p>
+      <button class="btn" style="margin-top:8px" onclick="App.openCandForm()">＋ Aggiungi candidatura</button></div>`;
+  }
+
+  // prossimi appuntamenti
+  const upcoming = cs.flatMap(c => c.eventi.filter(e => e.ts >= Date.now() - 2 * 3600000 && !e.done)
+    .map(e => ({ ...e, azienda: c.azienda, cid: c.id })))
+    .sort((a, b) => a.ts - b.ts).slice(0, 6);
+  const upHtml = upcoming.map(e => `<li onclick="App.apriCandidatura('${e.cid}')" style="cursor:pointer">
+      <span>${tipoEvento(e.tipo).icon} <b>${esc(e.azienda)}</b> · ${tipoEvento(e.tipo).label}</span>
+      <span class="up-when">${fmtGiorno(e.ts)}, ${fmtTime(e.ts)}</span></li>`).join('')
+    || '<li style="color:var(--muted)">Nessun appuntamento in programma</li>';
+
+  const rows = list => list.map(c => {
+    const next = prossimoEvento(c);
+    const stelle = c.memo.stelle ? '⭐'.repeat(c.memo.stelle) : '';
+    return `<div class="card hist-item" onclick="App.apriCandidatura('${c.id}')" style="cursor:pointer">
+      <div class="hi-main"><b>${esc(c.azienda)}</b> — ${esc(c.posizione)} <span class="badge neutral">${esc(c.livello)}</span>
+        <div class="hi-sub">${c.memo.ral ? '💶 ' + esc(c.memo.ral) + ' · ' : ''}${c.memo.modalita && c.memo.modalita !== '—' ? esc(c.memo.modalita) + ' · ' : ''}${next ? '📅 ' + fmtGiorno(next.ts) + ', ' + fmtTime(next.ts) : 'nessun appuntamento fissato'}</div></div>
+      <div class="hi-actions">${stelle ? `<span class="badge warn">${stelle}</span>` : ''}${badgeCandR(c)}</div>
+    </div>`;
+  }).join('');
+
+  // confronto rapido
+  const cmp = attive.length >= 2 ? `<div class="card" style="margin-bottom:14px"><h2>⚖️ Confronto rapido</h2>
+    <div style="overflow-x:auto"><table class="cmp"><thead><tr>
+      <th>Azienda</th><th>Stato</th><th>RAL</th><th>Modalità</th><th>Contratto</th><th>Giudizio</th>
+    </tr></thead><tbody>
+    ${[...attive].sort((a, b) => (b.memo.stelle || 0) - (a.memo.stelle || 0)).map(c => `<tr onclick="App.apriCandidatura('${c.id}')">
+      <td><b>${esc(c.azienda)}</b><div class="td-sub">${esc(c.posizione)}</div></td>
+      <td>${badgeCandR(c)}</td>
+      <td>${esc(c.memo.ral || '—')}</td>
+      <td>${esc(c.memo.modalita && c.memo.modalita !== '—' ? c.memo.modalita : '—')}</td>
+      <td>${esc(c.memo.contratto || '—')}</td>
+      <td>${c.memo.stelle ? '⭐'.repeat(c.memo.stelle) : '—'}</td>
+    </tr>`).join('')}</tbody></table></div></div>` : '';
+
+  return `<div class="view-head">
+    <div><h1>I tuoi colloqui</h1><div class="sub">${attive.length} candidature attive · ${chiuse.length} chiuse</div></div>
+    <button class="btn" onclick="App.openCandForm()">＋ Aggiungi candidatura</button>
+  </div>
+  <div class="card" style="margin-bottom:14px">${renderCalendario()}</div>
+  <div class="card" style="margin-bottom:14px"><h2>⏭️ Prossimi appuntamenti</h2><ul class="upcoming">${upHtml}</ul></div>
+  ${cmp}
+  ${attive.length ? `<h2 class="sez">In corso</h2>${rows(attive)}` : ''}
+  ${chiuse.length ? `<h2 class="sez">Chiuse</h2>${rows(chiuse)}` : ''}`;
+}
+
+App.calNav = delta => {
+  App.calM += delta;
+  if (App.calM < 0) { App.calM = 11; App.calY--; }
+  if (App.calM > 11) { App.calM = 0; App.calY++; }
+  render();
+};
+
+function renderCalendario() {
+  const y = App.calY, m = App.calM;
+  const oggi = new Date();
+  const first = new Date(y, m, 1);
+  const startOffset = (first.getDay() + 6) % 7; // lunedì = 0
+  const titolo = first.toLocaleDateString('it-IT', { month: 'long', year: 'numeric' });
+  const byDay = {};
+  state.candidature.forEach(c => c.eventi.forEach(e => {
+    const k = new Date(e.ts).toDateString();
+    (byDay[k] = byDay[k] || []).push({ ...e, azienda: c.azienda, cid: c.id });
+  }));
+  let cells = '';
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(y, m, 1 - startOffset + i);
+    const k = d.toDateString();
+    const evs = (byDay[k] || []).sort((a, b) => a.ts - b.ts);
+    const isToday = k === oggi.toDateString();
+    const other = d.getMonth() !== m;
+    const shown = evs.slice(0, 2).map(e =>
+      `<span class="cal-ev ${e.ts < Date.now() ? 'past' : ''}" onclick="App.apriCandidatura('${e.cid}')"
+        title="${esc(e.azienda)} — ${tipoEvento(e.tipo).label}, ${fmtTime(e.ts)}">${tipoEvento(e.tipo).icon} ${fmtTime(e.ts)} ${esc(e.azienda)}</span>`).join('');
+    const more = evs.length > 2 ? `<span class="cal-more">+${evs.length - 2}</span>` : '';
+    cells += `<div class="cal-cell ${other ? 'other' : ''} ${isToday ? 'today' : ''}">
+      <span class="cal-day">${d.getDate()}</span>${shown}${more}</div>`;
+  }
+  return `<div class="cal-head">
+    <h2 style="margin:0">📅 ${titolo.charAt(0).toUpperCase() + titolo.slice(1)}</h2>
+    <div style="display:flex;gap:6px">
+      <button class="btn small ghost" onclick="App.calNav(-1)">‹</button>
+      <button class="btn small ghost" onclick="const d=new Date();App.calY=d.getFullYear();App.calM=d.getMonth();render()">Oggi</button>
+      <button class="btn small ghost" onclick="App.calNav(1)">›</button>
+    </div></div>
+  <div class="cal-wrap"><div class="cal-grid">
+    ${['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom'].map(d => `<div class="cal-dow">${d}</div>`).join('')}
+    ${cells}
+  </div></div>`;
+}
+
+// ── CRUD candidatura ──
+App.openCandForm = id => {
+  const c = id ? getCandR(id) : null;
+  const livOpts = LIVELLI.map(l => `<option ${(c?.livello || state.setup.livello) === l ? 'selected' : ''}>${l}</option>`).join('');
+  openModal(`<h2>${c ? 'Modifica candidatura' : 'Nuova candidatura'}</h2>
+  <form onsubmit="App.submitCand(event,'${id || ''}')">
+    <div class="form-2col">
+      <div><label>Azienda *</label><input name="azienda" required value="${esc(c?.azienda || '')}" placeholder="es. Acme S.r.l."></div>
+      <div><label>Posizione *</label><input name="posizione" required value="${esc(c?.posizione || '')}" placeholder="es. Frontend Developer"></div>
+      <div><label>Livello</label><select name="livello">${livOpts}</select></div>
+      <div><label>Link annuncio</label><input name="link" type="url" value="${esc(c?.link || '')}" placeholder="https://…"></div>
+    </div>
+    <label>Testo dell’annuncio (utile per allenarti con la simulazione)</label>
+    <textarea name="annuncio" rows="3">${esc(c?.annuncio || '')}</textarea>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" onclick="closeModal()">Annulla</button>
+      <button type="submit" class="btn">Salva</button>
+    </div>
+  </form>`);
+};
+App.submitCand = (ev, id) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  const dati = {
+    azienda: f.get('azienda').trim(), posizione: f.get('posizione').trim(),
+    livello: f.get('livello'), link: f.get('link').trim(), annuncio: f.get('annuncio').trim(),
+  };
+  if (id) {
+    Object.assign(getCandR(id), dati);
+    toast('Candidatura aggiornata');
+  } else {
+    const c = {
+      id: 'k' + (state.seq++), createdAt: Date.now(),
+      stage: 'candidatura', esito: null, eventi: [],
+      memo: { ral: '', contratto: '', modalita: '—', sede: '', benefit: '', contatto: '', pro: '', contro: '', note: '', stelle: 0 },
+      ...dati,
+    };
+    state.candidature.push(c);
+    App.candId = c.id;
+    App.view = 'candidatura';
+    toast('Candidatura aggiunta: ora fissa il primo colloquio 📅');
+  }
+  save(); closeModal(); render();
+};
+App.deleteCand = id => {
+  const c = getCandR(id);
+  if (!confirm(`Eliminare la candidatura per ${c.azienda}?`)) return;
+  state.candidature = state.candidature.filter(x => x.id !== id);
+  save(); App.go('colloqui');
+  toast('Candidatura eliminata');
+};
+App.apriCandidatura = id => { App.candId = id; App.go('candidatura'); };
+App.setStageCand = (id, stage) => {
+  const c = getCandR(id);
+  c.stage = stage;
+  if (stage !== 'chiusa') c.esito = null;
+  save(); render();
+};
+App.setEsitoCand = (id, esito) => { getCandR(id).esito = esito || null; save(); render(); };
+
+// ── Eventi / appuntamenti ──
+App.openEventoForm = (cid, eid) => {
+  const c = getCandR(cid);
+  const e = eid ? c.eventi.find(x => x.id === eid) : null;
+  const tipoOpts = TIPI_EVENTO.map(t => `<option value="${t.id}" ${e?.tipo === t.id ? 'selected' : ''}>${t.icon} ${t.label}</option>`).join('');
+  const val = e ? new Date(e.ts - new Date(e.ts).getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '';
+  openModal(`<h2>${e ? 'Modifica appuntamento' : 'Nuovo appuntamento'}</h2>
+  <div class="m-sub" style="color:var(--muted);font-size:13px;margin-bottom:6px">${esc(c.azienda)} — ${esc(c.posizione)}</div>
+  <form onsubmit="App.submitEvento(event,'${cid}','${eid || ''}')">
+    <label>Tipo</label><select name="tipo">${tipoOpts}</select>
+    <label>Data e ora *</label><input type="datetime-local" name="ts" required value="${val}">
+    <label>Luogo / link videocall</label><input name="luogo" value="${esc(e?.luogo || '')}" placeholder="es. sede di Milano, oppure link Meet/Teams">
+    <label>Note</label><input name="note" value="${esc(e?.note || '')}" placeholder="es. con il CTO, portare portfolio…">
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" onclick="closeModal()">Annulla</button>
+      <button type="submit" class="btn">Salva</button>
+    </div>
+  </form>`);
+};
+App.submitEvento = (ev, cid, eid) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  const ts = new Date(f.get('ts')).getTime();
+  if (!ts) { toast('Data non valida'); return; }
+  const c = getCandR(cid);
+  const dati = { tipo: f.get('tipo'), ts, luogo: f.get('luogo').trim(), note: f.get('note').trim() };
+  if (eid) Object.assign(c.eventi.find(x => x.id === eid), dati);
+  else c.eventi.push({ id: 'e' + (state.seq++), done: false, ...dati });
+  // avanza automaticamente lo stato se l'appuntamento è di una fase successiva
+  const ordine = STAGE_REALI.map(s => s.id);
+  if (ordine.includes(dati.tipo) && ordine.indexOf(dati.tipo) > ordine.indexOf(c.stage) && c.stage !== 'chiusa') {
+    c.stage = dati.tipo;
+    toast(`Appuntamento salvato — stato aggiornato a “${stageReale(dati.tipo).label}”`);
+  } else toast('Appuntamento salvato');
+  save(); closeModal(); render();
+};
+App.deleteEvento = (cid, eid) => {
+  const c = getCandR(cid);
+  c.eventi = c.eventi.filter(x => x.id !== eid);
+  save(); render();
+};
+App.toggleEventoDone = (cid, eid) => {
+  const e = getCandR(cid).eventi.find(x => x.id === eid);
+  e.done = !e.done;
+  save(); render();
+};
+
+// ── Memo decisionale ──
+App.setMemo = (id, campo, valore) => { getCandR(id).memo[campo] = valore; save(); };
+App.setStelle = (id, n) => {
+  const m = getCandR(id).memo;
+  m.stelle = m.stelle === n ? 0 : n;
+  save(); render();
+};
+App.allenati = id => {
+  const c = getCandR(id);
+  Object.assign(state.setup, { posizione: c.posizione, livello: c.livello, annuncio: c.annuncio || '' });
+  save();
+  App.go('home');
+  toast(`Setup precompilato da ${c.azienda}: allenati per questo colloquio 🎯`);
+};
+
+// ── Scheda candidatura ──
+function renderCandidatura() {
+  const c = getCandR(App.candId);
+  if (!c) { App.view = 'colloqui'; return renderColloqui(); }
+  const chiusa = c.stage === 'chiusa';
+
+  // mini-stepper dello stato
+  const ordine = STAGE_REALI.slice(0, -1);
+  const idx = ordine.findIndex(s => s.id === c.stage);
+  const stepper = chiusa
+    ? `<div class="stepper">${badgeCandR(c)}</div>`
+    : `<div class="stepper">${ordine.map((s, i) =>
+        `<div class="step ${i < idx ? 'done' : i === idx ? 'active' : ''}">${s.icon} ${s.short}</div>`).join('')}</div>`;
+
+  const stageOpts = STAGE_REALI.map(s => `<option value="${s.id}" ${c.stage === s.id ? 'selected' : ''}>${s.icon} ${s.label}</option>`).join('');
+  const esitoOpts = `<option value="">— esito —</option>` + Object.entries(ESITI_REALI)
+    .map(([k, v]) => `<option value="${k}" ${c.esito === k ? 'selected' : ''}>${v.label}</option>`).join('');
+
+  const eventi = [...c.eventi].sort((a, b) => a.ts - b.ts);
+  const evHtml = eventi.map(e => {
+    const past = e.ts < Date.now();
+    return `<li class="ev-row ${e.done ? 'done' : ''}">
+      <span class="ev-when ${!past && !e.done ? 'next' : ''}">${fmtGiorno(e.ts)}<br>${fmtTime(e.ts)}</span>
+      <span class="ev-body"><b>${tipoEvento(e.tipo).icon} ${tipoEvento(e.tipo).label}</b>
+        ${e.luogo ? `<span class="td-sub">📍 ${esc(e.luogo)}</span>` : ''}
+        ${e.note ? `<span class="td-sub">📝 ${esc(e.note)}</span>` : ''}</span>
+      <span class="ev-actions">
+        <button class="btn small ghost" title="${e.done ? 'Segna da fare' : 'Segna come fatto'}" onclick="App.toggleEventoDone('${c.id}','${e.id}')">${e.done ? '↩︎' : '✓'}</button>
+        <button class="btn small ghost" onclick="App.openEventoForm('${c.id}','${e.id}')">✏️</button>
+        <button class="btn small ghost" style="color:var(--crit-text)" onclick="App.deleteEvento('${c.id}','${e.id}')">🗑</button>
+      </span></li>`;
+  }).join('') || '<li style="color:var(--muted);list-style:none;padding:8px 0">Nessun appuntamento: aggiungi il primo colloquio.</li>';
+
+  const memoField = (campo, label, placeholder, wide) => `<div ${wide ? 'style="grid-column:1/-1"' : ''}>
+    <label>${label}</label>
+    <input value="${esc(c.memo[campo] || '')}" placeholder="${placeholder}"
+      onchange="App.setMemo('${c.id}','${campo}',this.value)"></div>`;
+  const memoArea = (campo, label, placeholder) => `<div style="grid-column:1/-1">
+    <label>${label}</label>
+    <textarea rows="2" placeholder="${placeholder}"
+      onchange="App.setMemo('${c.id}','${campo}',this.value)">${esc(c.memo[campo] || '')}</textarea></div>`;
+  const modOpts = MODALITA.map(m => `<option ${c.memo.modalita === m ? 'selected' : ''}>${m}</option>`).join('');
+  const stelle = [1, 2, 3, 4, 5].map(n =>
+    `<button class="star-btn ${c.memo.stelle >= n ? 'on' : ''}" onclick="App.setStelle('${c.id}',${n})" title="${n}/5">★</button>`).join('');
+
+  return `<button class="back-link no-print" onclick="App.go('colloqui')">← Tutti i colloqui</button>
+  <div class="view-head">
+    <div><h1>${esc(c.azienda)}</h1>
+    <div class="sub">${esc(c.posizione)} · ${esc(c.livello)}${c.link ? ` · <a href="${esc(c.link)}" target="_blank" rel="noopener">annuncio ↗</a>` : ''}</div></div>
+  </div>
+  ${stepper}
+  <div class="actions-bar">
+    <button class="btn" onclick="App.openEventoForm('${c.id}')">📅 Aggiungi appuntamento</button>
+    <button class="btn good" onclick="App.allenati('${c.id}')">🎯 Allenati per questo colloquio</button>
+    <button class="btn ghost" onclick="App.openCandForm('${c.id}')">✏️ Modifica</button>
+    <button class="btn ghost" style="color:var(--crit-text)" onclick="App.deleteCand('${c.id}')">Elimina</button>
+  </div>
+  <div class="card" style="margin-bottom:14px;display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+    <div style="flex:1;min-width:220px"><label style="margin-top:0">Stato della candidatura</label>
+      <select onchange="App.setStageCand('${c.id}',this.value)">${stageOpts}</select></div>
+    ${chiusa ? `<div style="flex:1;min-width:220px"><label style="margin-top:0">Esito</label>
+      <select onchange="App.setEsitoCand('${c.id}',this.value)">${esitoOpts}</select></div>` : ''}
+  </div>
+  <div class="detail-grid">
+    <div class="card"><h2>📝 Memo per la scelta <span class="hint" style="font-weight:400">(si salva da solo)</span></h2>
+      <div class="memo-grid">
+        ${memoField('ral', '💶 RAL / retribuzione', 'es. 28-32k€ + buoni pasto')}
+        ${memoField('contratto', '📄 Contratto', 'es. indeterminato, CCNL Commercio')}
+        <div><label>🏠 Modalità</label><select onchange="App.setMemo('${c.id}','modalita',this.value)">${modOpts}</select></div>
+        ${memoField('sede', '📍 Sede', 'es. Milano Centrale, 2gg/settimana')}
+        ${memoField('benefit', '🎁 Benefit', 'es. welfare 1000€, formazione, MacBook')}
+        ${memoField('contatto', '👤 Contatto', 'es. Anna Rossi (HR) — anna@…')}
+        ${memoArea('pro', '👍 Pro', 'Cosa ti convince di questa azienda…')}
+        ${memoArea('contro', '👎 Contro', 'Dubbi e punti deboli…')}
+        ${memoArea('note', '🗒️ Altre note', 'Feedback ricevuti, impressioni sul team, scadenze…')}
+      </div>
+      <div style="margin-top:12px;display:flex;align-items:center;gap:8px">
+        <span style="font-size:13px;color:var(--ink-2);font-weight:600">Quanto ti attira?</span>${stelle}
+      </div>
+    </div>
+    <div class="card"><h2>📅 Appuntamenti</h2><ul class="ev-list">${evHtml}</ul></div>
+  </div>`;
+}
 
 // ── Avvio ──
 window.App = App;

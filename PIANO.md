@@ -83,3 +83,15 @@ recruiting-app/
 - **PWA**: manifest + service worker network-first (mai su Ollama); stampa/PDF
   del report con CSS di stampa.
 - **Profili salvati**: più candidature riutilizzabili (posizione+CV+annuncio+opzioni).
+
+## 5. v2.2 — Giuria e tracker (implementate)
+- **Giuria a 3 giudici**: ogni risposta valutata separatamente da HR / esperto tecnico /
+  hiring manager (chiamate piccole e affidabili), voto = mediana, badge unanime/divisa,
+  sintesi dal "portavoce"; giudici su modelli diversi se installati.
+- **Tracker colloqui reali** (vista 📅 Colloqui): calendario mensile con gli appuntamenti,
+  candidature con stato di avanzamento (auto-aggiornato quando fissi un colloquio di una
+  fase successiva), scheda memo decisionale (RAL, contratto, modalità, sede, benefit,
+  contatto, pro/contro, note, giudizio a stelle, salvataggio automatico), confronto
+  rapido tra candidature attive, e "Allenati per questo colloquio" che precompila la
+  simulazione con posizione/livello/annuncio della candidatura.
+- Rebrand in **HireReady**; repo GitHub Blank9797/HireReady.

@@ -14,6 +14,10 @@ Un recruiter AI **100% in locale** (via [Ollama](https://ollama.com)) simula il 
 
 Ogni risposta è votata da **tre giudici AI indipendenti** — HR, esperto tecnico e hiring manager — ognuno con il proprio criterio. Il voto è la **mediana** dei tre, e il disaccordo è segnalato ("giuria divisa"). Se hai più modelli installati in Ollama, ogni giudice usa un modello diverso. Un "portavoce" sintetizza il verdetto finale.
 
+### 📅 Tracker dei colloqui reali
+
+Oltre ad allenarti, HireReady tiene traccia delle **candidature vere**: calendario mensile degli appuntamenti, stato di avanzamento per azienda (candidatura → screening → conoscitivo → tecnico → finale → offerta), e una **scheda memo per ogni azienda** con RAL, contratto, modalità di lavoro, benefit, contatti, pro/contro e giudizio a stelle — più una tabella di **confronto rapido** tra le offerte. Da ogni candidatura puoi lanciare la simulazione precompilata con posizione e annuncio ("Allenati per questo colloquio").
+
 ## Caratteristiche
 
 - Posizione e livello liberi (Junior / Mid / Senior / Lead), annuncio di lavoro opzionale per domande più mirate
