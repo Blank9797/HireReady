@@ -1,0 +1,13 @@
+{
+  "name": "HireReady — Simulatore di colloqui",
+  "short_name": "HireReady",
+  "description": "Preparati ai colloqui di lavoro con un recruiter AI in locale (Ollama).",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#f9f9f7",
+  "theme_color": "#2a78d6",
+  "lang": "it",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

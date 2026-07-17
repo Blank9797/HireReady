@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HireReady — Simulatore di colloqui</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#2a78d6">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="logo">Hire<span>Ready</span></div>
+      <div class="logo-sub">Allenati con un recruiter AI in locale</div>
+      <button class="nav-btn" data-view="sim" onclick="App.goSim()">🎯 Simulazione</button>
+      <button class="nav-btn" data-view="storico" onclick="App.go('storico')">🕘 Storico</button>
+      <div class="ai-pill" id="ai-pill"><span class="dot ko"></span><span>Verifica AI…</span></div>
+      <div class="sidebar-footer">
+        <button onclick="App.exportData()">⬇️ Esporta dati</button>
+        <button onclick="App.importData()">⬆️ Importa dati</button>
+        <button onclick="App.resetData()">🗑️ Azzera dati</button>
+      </div>
+      <input type="file" id="import-file" accept="application/json" style="display:none" onchange="App.handleImport(event)">
+      <input type="file" id="cv-pdf" accept="application/pdf" style="display:none" onchange="App.handleCvPdf(event)">
+    </aside>
+    <main class="main" id="view"></main>
+  </div>
+  <div id="toast"></div>
+  <script src="js/vendor/pdf.min.js"></script>
+  <script src="js/prompts.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
