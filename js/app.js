@@ -79,6 +79,10 @@ function normalizeEval(j, listKeys) {
 }
 
 // ── Client Ollama ──
+// L'app può girare in locale (http://localhost) o hostata (es. Vercel): nel
+// secondo caso Ollama rifiuta le richieste finché la sua origine non è
+// autorizzata via OLLAMA_ORIGINS.
+const HOSTED = !['localhost', '127.0.0.1', ''].includes(location.hostname);
 const AI = { ok: false, base: null, models: [], err: 'Verifica in corso…' };
 
 async function checkOllama() {
@@ -99,7 +103,9 @@ async function checkOllama() {
     } catch { /* prova il prossimo indirizzo */ }
   }
   AI.ok = false;
-  AI.err = 'Ollama non raggiungibile: avvia l’app di Ollama o esegui “ollama serve”';
+  AI.err = HOSTED
+    ? 'Versione online: il browser non può usare l’Ollama del tuo computer finché non autorizzi questo sito (istruzioni qui sotto)'
+    : 'Ollama non raggiungibile: avvia l’app di Ollama o esegui “ollama serve”';
 }
 
 async function ollamaChat(messages, { json = false, temperature = 0.7, onToken = null, model = null } = {}) {
@@ -263,10 +269,20 @@ function renderHome() {
   const lingOpts = Object.entries(LINGUE).map(([k, v]) => `<option value="${k}" ${s.lingua === k ? 'selected' : ''}>${v}</option>`).join('');
   const nOpts = n => Array.from({ length: 8 }, (_, i) => i + 3).map(x => `<option ${x === n ? 'selected' : ''}>${x}</option>`).join('');
   const profOpts = state.profili.map(p => `<option value="${p.id}">${esc(p.nome)}</option>`).join('');
+  const cmdOrigins = `OLLAMA_ORIGINS="${location.origin}" ollama serve`;
+  const hostedHelp = `<div class="hint" style="margin-top:6px">
+      L’AI gira <b>sul tuo computer</b> via Ollama: la versione online funziona solo se autorizzi questo sito a parlare con il tuo Ollama.<br>
+      1. Installa Ollama da ollama.com e scarica un modello: <code>ollama pull gemma3:4b</code><br>
+      2. Chiudi Ollama e riavvialo autorizzando questo sito:</div>
+      <div class="cmd-row"><code>${esc(cmdOrigins)}</code>
+        <button class="btn small ghost" onclick="App.copyText('${esc(cmdOrigins)}')">📋 Copia</button></div>
+      <div class="hint">3. Premi “Riprova connessione”. Se il browser continua a bloccare (Chrome può impedire a un sito pubblico di raggiungere localhost),
+      usa la versione locale: scarica l’app da GitHub e aprila con <code>python3 -m http.server 4190</code>.</div>`;
+  const localHelp = `<div class="hint" style="margin-top:6px">L’app usa un LLM locale via Ollama (gratuito, nessun dato esce dal tuo computer).
+      Installa Ollama da ollama.com, poi esegui <code>ollama pull gemma3:4b</code>.</div>`;
   const aiWarn = !AI.ok ? `<div class="card" style="margin-bottom:16px;border-color:var(--crit)">
       <b style="color:var(--crit-text)">⚠️ ${esc(AI.err || 'AI non disponibile')}</b>
-      <div class="hint" style="margin-top:6px">L’app usa un LLM locale via Ollama (gratuito, nessun dato esce dal tuo computer).
-      Installa Ollama da ollama.com, poi esegui <code>ollama pull gemma3:4b</code>.</div>
+      ${HOSTED ? hostedHelp : localHelp}
       <button class="btn small ghost" style="margin-top:10px" onclick="App.retryAI()">🔄 Riprova connessione</button>
     </div>` : '';
   const profili = state.profili.length ? `<div class="prof-row">
@@ -321,6 +337,11 @@ function renderHome() {
 }
 
 App.retryAI = async () => { AI.err = 'Verifica in corso…'; render(); await checkOllama(); render(); };
+App.copyText = text => {
+  const done = () => toast('Copiato ✓');
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
+  else fallbackCopy(text, done);
+};
 App.setModel = m => { state.setup.model = m; save(); render(); };
 
 function leggiSetupForm() {
