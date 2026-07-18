@@ -121,3 +121,15 @@ recruiting-app/
   in cache. Zero installazioni: la versione Vercel funziona per chiunque senza
   Ollama né chiavi API. Streaming, JSON mode con fallback, stop via
   interruptGenerate, progress live del download.
+
+## 8. v2.7 — Palestra (implementata)
+- **Caccia alle domande, 3 agenti**: per la posizione/livello scelti, tre agenti
+  con prospettive diverse (🧑‍💼 comportamentali, 🧪 tecniche, 🎯 casi reali e
+  trabocchetti) raccolgono ~7 domande a testa; dedup e categorie/difficoltà.
+- **Drill**: rispondi a ogni domanda del banco e il giudice tecnico ti vota
+  (best score e tentativi salvati, statistiche del banco).
+- **Dossier azienda**: ricerca reale su Wikipedia (IT→EN, CORS aperto) + sintesi
+  AI: profilo, fatti da citare, "perché noi", consigli per il giorno del
+  colloquio, domande da fare; link pronti a esperienze di colloquio/LinkedIn/news;
+  campo "attenzione" per i limiti delle informazioni.
+- Collegata al tracker: "🏋️ Palestra e dossier" dalla scheda candidatura.

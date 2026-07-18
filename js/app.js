@@ -9,6 +9,7 @@ function freshState() {
       motore: 'ollama', apiUrl: 'https://api.groq.com/openai/v1', apiKey: '', apiModel: 'llama-3.3-70b-versatile',
       uiLang: 'it', webllmModel: 'Llama-3.2-3B-Instruct-q4f16_1-MLC' },
     profili: [], sessions: [], candidature: [], activeId: null, seq: 1,
+    palestra: { banchi: {}, dossier: null, pos: '', liv: '', azienda: '' },
   };
 }
 function loadState() {
@@ -22,6 +23,7 @@ function loadState() {
         s.setup = { ...d, ...s.setup };
         s.profili = s.profili || [];
         s.candidature = s.candidature || [];
+        s.palestra = s.palestra || { banchi: {}, dossier: null, pos: '', liv: '', azienda: '' };
         return s;
       }
     }
@@ -384,7 +386,7 @@ const App = {
 // ── Render principale ──
 function render() {
   // etichette localizzate della shell
-  const navLbl = { sim: '🎯 ' + t('Simulazione'), colloqui: '📅 ' + t('Colloqui'), ripasso: '📚 ' + t('Ripasso'), storico: '🕘 ' + t('Storico') };
+  const navLbl = { sim: '🎯 ' + t('Simulazione'), palestra: '🏋️ ' + t('Palestra'), colloqui: '📅 ' + t('Colloqui'), ripasso: '📚 ' + t('Ripasso'), storico: '🕘 ' + t('Storico') };
   document.querySelectorAll('.nav-btn').forEach(b => { if (navLbl[b.dataset.view]) b.textContent = navLbl[b.dataset.view]; });
   const langBtn = $('#lang-toggle');
   if (langBtn) langBtn.textContent = LANG === 'en' ? '🌐 Italiano' : '🌐 English';
@@ -398,6 +400,7 @@ function render() {
       (v === 'sim' && ['home', 'sim'].includes(App.view)) ||
       (v === 'colloqui' && ['colloqui', 'candidatura'].includes(App.view)) ||
       (v === 'ripasso' && App.view === 'ripasso') ||
+      (v === 'palestra' && App.view === 'palestra') ||
       (v === 'storico' && ['storico', 'report'].includes(App.view)));
   });
   const pill = $('#ai-pill');
@@ -418,6 +421,7 @@ function render() {
     case 'colloqui': v.innerHTML = renderColloqui(); break;
     case 'candidatura': v.innerHTML = renderCandidatura(); break;
     case 'ripasso': v.innerHTML = renderRipasso(); break;
+    case 'palestra': v.innerHTML = renderPalestra(); break;
   }
   const msgs = $('#chat-msgs');
   if (msgs) msgs.scrollTop = msgs.scrollHeight;
@@ -1449,6 +1453,238 @@ App.deleteSession = id => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════
+// PALESTRA: agenti caccia-domande, drill di allenamento, dossier azienda
+// ══════════════════════════════════════════════════════════════════════════
+
+const palKey = () => (state.palestra.pos || '').trim().toLowerCase() + '|' + (state.palestra.liv || 'Junior');
+const palBanco = () => state.palestra.banchi[palKey()] || null;
+const palProg = txt => { const el = $('#pal-prog'); if (el) el.textContent = txt; };
+
+function normalizeCaccia(j) {
+  if (!j || !Array.isArray(j.domande)) return null;
+  const out = j.domande.filter(d => d && d.domanda).map(d => ({
+    domanda: String(d.domanda).trim(),
+    categoria: String(d.categoria || '').trim().toLowerCase(),
+    difficolta: Math.max(1, Math.min(3, Math.round(Number(d.difficolta) || 2))),
+  }));
+  return out.length ? { domande: out } : null;
+}
+
+App.cacciaDomande = async () => {
+  const p = state.palestra;
+  if (!p.pos.trim()) { toast('Indica prima la posizione'); return; }
+  if (App.busy) return;
+  App.busy = 'palestra';
+  render();
+  const raccolte = [];
+  for (const ag of AGENTI_DOMANDE) {
+    palProg(`${ag.icona} ${ag.nome} sta cercando le sue domande…`);
+    try {
+      const r = await callJSONRetry(buildCacciaMessages(ag, p.pos, p.liv, state.setup.annuncio), normalizeCaccia, { temperature: 0.5 });
+      raccolte.push(...r.domande.map(d => ({ ...d, agente: ag.icona })));
+    } catch (e) {
+      if (e.name === 'AbortError') { App.busy = null; render(); return; }
+      // agente a vuoto: si prosegue con gli altri
+    }
+  }
+  // dedup per testo normalizzato
+  const visti = new Set();
+  const banco = [];
+  for (const d of raccolte) {
+    const k = d.domanda.toLowerCase().replace(/[^a-zà-ù0-9 ]/g, '').slice(0, 60);
+    if (visti.has(k)) continue;
+    visti.add(k);
+    banco.push({ ...d, best: null, tentativi: 0 });
+  }
+  if (!banco.length) { App.busy = null; App.lastError = null; render(); toast('Gli agenti non hanno trovato domande: riprova'); return; }
+  state.palestra.banchi[palKey()] = { ts: Date.now(), domande: banco.slice(0, 24) };
+  // tiene al massimo 8 banchi
+  const chiavi = Object.keys(state.palestra.banchi);
+  if (chiavi.length > 8) delete state.palestra.banchi[chiavi[0]];
+  save();
+  App.busy = null;
+  render();
+  toast(`${banco.length} domande raccolte dai 3 agenti 🎯`);
+};
+
+App.setPalField = (campo, valore) => { state.palestra[campo] = valore; save(); };
+
+// Drill: rispondi a una domanda del banco, il giudice tecnico ti vota
+App.drill = i => {
+  const b = palBanco();
+  const d = b?.domande[i];
+  if (!d) return;
+  openModal(`<h2>🏋️ Allenati</h2>
+  <div class="hint">${esc(state.palestra.pos)} (${esc(state.palestra.liv)}) · ${esc(d.categoria)} · ${'🔥'.repeat(d.difficolta)}</div>
+  <div class="feedback-box" style="margin:10px 0">${esc(d.domanda)}</div>
+  <textarea id="rip-ans" rows="5" placeholder="Rispondi come faresti al colloquio…"></textarea>
+  <div id="rip-res"></div>
+  <div class="modal-actions">
+    <button class="btn ghost" onclick="closeModal()">Chiudi</button>
+    <button class="btn" id="rip-btn" onclick="App.submitDrill(${i})">Valuta risposta</button>
+  </div>`);
+};
+App.submitDrill = async i => {
+  const b = palBanco();
+  const d = b?.domande[i];
+  const risposta = ($('#rip-ans')?.value || '').trim();
+  if (!d || !risposta) { toast('Scrivi prima la risposta'); return; }
+  const res = $('#rip-res'), btn = $('#rip-btn');
+  if (btn) btn.disabled = true;
+  if (res) res.innerHTML = `<div class="phase-loading" style="padding:16px"><div class="spinner"></div>Il giudice tecnico sta valutando…</div>`;
+  try {
+    const fake = { posizione: state.palestra.pos, livello: state.palestra.liv, annuncio: '', lingua: 'it', stile: 'neutro', cv: '' };
+    const v = await callJSONRetry(buildGiudiceMessages(GIUDICI[1], 'tecnico', fake, d.domanda, risposta, null), normalizeGiudice);
+    d.tentativi = (d.tentativi || 0) + 1;
+    d.best = d.best == null ? v.voto : Math.max(d.best, v.voto);
+    save();
+    if (res) res.innerHTML = `<div style="margin-top:10px">
+      <span class="badge ${v.voto >= 6 ? 'ok' : v.voto >= 4 ? 'warn' : 'bad'}" style="font-size:14px">${v.voto}/10</span>
+      <p style="font-size:13.5px;color:var(--ink-2);margin:8px 0">${esc(v.commento)}</p>
+      ${v.risposta_modello ? `<p class="qd-model" style="font-size:13px"><b>💡 Risposta modello:</b> ${esc(v.risposta_modello)}</p>` : ''}</div>`;
+  } catch (e) {
+    if (res) res.innerHTML = `<p style="color:var(--crit-text);font-size:13px">Errore AI: ${esc(e.message || e)} — riprova.</p>`;
+  }
+  if (btn) btn.disabled = false;
+};
+
+// Dossier azienda: Wikipedia (CORS aperto) + sintesi AI
+async function cercaWikipedia(nome) {
+  for (const lang of ['it', 'en']) {
+    try {
+      const s = await fetch(`https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(nome)}&srlimit=1&format=json&origin=*`,
+        { signal: AbortSignal.timeout(7000) }).then(r => r.json());
+      const title = s.query?.search?.[0]?.title;
+      if (!title) continue;
+      const e = await fetch(`https://${lang}.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&titles=${encodeURIComponent(title)}&format=json&origin=*`,
+        { signal: AbortSignal.timeout(7000) }).then(r => r.json());
+      const testo = (Object.values(e.query?.pages || {})[0]?.extract || '').slice(0, 1600);
+      if (testo) return { lang, title, testo, url: `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, '_'))}` };
+    } catch { /* prova la lingua successiva */ }
+  }
+  return null;
+}
+
+function normalizeDossier(j) {
+  if (!j) return null;
+  const out = {
+    profilo: String(j.profilo || '').trim(),
+    punti_chiave: asList(j.punti_chiave),
+    perche_noi: String(j.perche_noi || '').trim(),
+    dettagli_utili: asList(j.dettagli_utili),
+    domande_da_fare: asList(j.domande_da_fare),
+    attenzione: String(j.attenzione || '').trim(),
+  };
+  return out.profilo || out.punti_chiave.length ? out : null;
+}
+
+App.generaDossier = async () => {
+  const p = state.palestra;
+  if (!p.azienda.trim()) { toast('Scrivi il nome dell’azienda'); return; }
+  if (App.busy) return;
+  App.busy = 'dossier';
+  render();
+  try {
+    palProgDossier('📖 Cerco l’azienda su Wikipedia…');
+    const wiki = await cercaWikipedia(p.azienda.trim());
+    palProgDossier(wiki ? `📖 Trovata: “${wiki.title}” — 🧠 sintetizzo il dossier…` : '🧠 Non su Wikipedia: uso solo l’AI (con cautela)…');
+    const dati = await callJSONRetry(buildDossierMessages(p.azienda.trim(), p.pos || 'la posizione', wiki?.testo), normalizeDossier);
+    state.palestra.dossier = { azienda: p.azienda.trim(), ts: Date.now(), wiki, dati };
+    save();
+  } catch (e) {
+    if (e.name !== 'AbortError') toast('Errore AI: ' + (e.message || e));
+  }
+  App.busy = null;
+  render();
+};
+const palProgDossier = txt => { const el = $('#dos-prog'); if (el) el.textContent = txt; };
+
+App.palestraDa = candId => {
+  const c = getCandR(candId);
+  Object.assign(state.palestra, { pos: c.posizione, liv: c.livello, azienda: c.azienda });
+  save();
+  App.go('palestra');
+};
+
+function renderPalestra() {
+  const p = state.palestra;
+  if (!p.pos && state.setup.posizione) p.pos = state.setup.posizione;
+  if (!p.liv) p.liv = state.setup.livello;
+  const livOpts = LIVELLI.map(l => `<option ${p.liv === l ? 'selected' : ''}>${l}</option>`).join('');
+  const b = palBanco();
+  const busyCaccia = App.busy === 'palestra';
+  const busyDossier = App.busy === 'dossier';
+
+  // banco domande
+  const fatte = b ? b.domande.filter(d => d.best != null).length : 0;
+  const media = b && fatte ? (b.domande.filter(d => d.best != null).reduce((a, d) => a + d.best, 0) / fatte).toFixed(1) : null;
+  const bancoHtml = b ? `
+    <div class="del-chips" style="margin:10px 0">
+      <span class="del-chip">🗂 ${b.domande.length} domande</span>
+      <span class="del-chip">✅ ${fatte} affrontate</span>
+      ${media ? `<span class="del-chip">⭐ best medio ${media}/10</span>` : ''}
+      <span class="del-chip">📅 ${fmtD(b.ts)}</span>
+    </div>
+    ${b.domande.map((d, i) => `<details class="q-det">
+      <summary><span class="qd-num">${d.agente}</span> ${esc(d.domanda)}
+        <span class="badge neutral">${esc(d.categoria)}</span>
+        <span class="badge neutral">${'🔥'.repeat(d.difficolta)}</span>
+        ${d.best != null ? `<span class="badge ${d.best >= 6 ? 'ok' : d.best >= 4 ? 'warn' : 'bad'}">best ${d.best}/10</span>` : ''}</summary>
+      <div class="qd-body">
+        ${d.tentativi ? `<div class="hint">${d.tentativi} tentativi</div>` : ''}
+        <button class="btn small" ${AI.ok ? '' : 'disabled'} onclick="App.drill(${i})">🏋️ Rispondi ora</button>
+      </div></details>`).join('')}` : '';
+
+  // dossier
+  const dos = p.dossier;
+  const linkRicerca = az => {
+    const q = s2 => encodeURIComponent(s2);
+    return `<div class="actions-bar" style="margin-top:10px">
+      <a class="btn small ghost" target="_blank" rel="noopener" href="https://www.google.com/search?q=${q(az + ' domande colloquio glassdoor')}">🔎 Esperienze di colloquio</a>
+      <a class="btn small ghost" target="_blank" rel="noopener" href="https://www.linkedin.com/search/results/companies/?keywords=${q(az)}">💼 LinkedIn</a>
+      <a class="btn small ghost" target="_blank" rel="noopener" href="https://news.google.com/search?q=${q(az)}&hl=it">📰 Notizie recenti</a>
+    </div>`;
+  };
+  const dossierHtml = busyDossier
+    ? `<div class="phase-loading" style="padding:20px"><div class="spinner"></div><b id="dos-prog">Preparazione…</b></div>`
+    : dos ? `
+      <div class="hint" style="margin:8px 0 4px">Dossier su <b>${esc(dos.azienda)}</b> — ${fmtD(dos.ts)}${dos.wiki ? ` · fonte: <a href="${esc(dos.wiki.url)}" target="_blank" rel="noopener">Wikipedia (${dos.wiki.lang})</a>` : ' · ⚠️ solo conoscenza AI, verifica i fatti'}</div>
+      ${dos.dati.attenzione ? `<div class="hint" style="color:var(--warn-text)">⚠️ ${esc(dos.dati.attenzione)}</div>` : ''}
+      <div class="feedback-box" style="margin-top:8px">${esc(dos.dati.profilo)}</div>
+      ${dos.dati.punti_chiave.length ? `<div class="eval-h blue" style="margin-top:10px">Fatti da citare al colloquio</div><ul class="g-ul">${dos.dati.punti_chiave.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+      ${dos.dati.perche_noi ? `<div class="eval-h ok" style="margin-top:10px">“Perché vuoi lavorare da noi?”</div><p style="font-size:13.5px;color:var(--ink-2);margin:6px 0">${esc(dos.dati.perche_noi)}</p>` : ''}
+      ${dos.dati.dettagli_utili.length ? `<div class="eval-h blue" style="margin-top:10px">Il giorno del colloquio</div><ul class="g-ul">${dos.dati.dettagli_utili.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+      ${dos.dati.domande_da_fare.length ? `<div class="eval-h ok" style="margin-top:10px">Domande da fare a loro</div><ul class="g-ul">${dos.dati.domande_da_fare.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+      ${linkRicerca(dos.azienda)}` : '';
+
+  return `<div class="view-head"><div><h1>🏋️ Palestra</h1>
+    <div class="sub">Gli agenti raccolgono le domande per la tua posizione; tu ti alleni una domanda alla volta</div></div></div>
+  <div class="card" style="margin-bottom:14px">
+    <div class="setup-grid">
+      <div><label>Posizione</label><input value="${esc(p.pos)}" onchange="App.setPalField('pos',this.value)" placeholder="es. Sviluppatore Frontend React"></div>
+      <div><label>Livello</label><select onchange="App.setPalField('liv',this.value)">${livOpts}</select></div>
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:14px">
+    <h2>🔎 Caccia alle domande — 3 agenti</h2>
+    <div class="hint">🧑‍💼 comportamentali · 🧪 tecniche · 🎯 casi reali e trabocchetti — poi allenati e fatti votare dal giudice.</div>
+    ${busyCaccia
+      ? `<div class="phase-loading" style="padding:20px"><div class="spinner"></div><b id="pal-prog">Gli agenti partono…</b></div>`
+      : `<div class="actions-bar"><button class="btn" ${AI.ok ? '' : 'disabled'} onclick="App.cacciaDomande()">${b ? '🔄 Nuova caccia' : '🚀 Lancia gli agenti'}</button></div>`}
+    ${bancoHtml}
+  </div>
+  <div class="card">
+    <h2>🏢 Dossier azienda</h2>
+    <div class="hint">Cerco l’azienda su Wikipedia e preparo i dettagli utili per il giorno del colloquio.</div>
+    <div class="setup-grid" style="margin-top:4px">
+      <div><label>Nome azienda</label><input value="${esc(p.azienda)}" onchange="App.setPalField('azienda',this.value)" placeholder="es. Bending Spoons"></div>
+      <div style="display:flex;align-items:flex-end"><button class="btn" ${AI.ok && !busyDossier ? '' : 'disabled'} onclick="App.generaDossier()">${dos ? '🔄 Rigenera dossier' : '🕵️ Prepara il dossier'}</button></div>
+    </div>
+    ${dossierHtml}
+  </div>`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // RIPASSO: guida di preparazione + banca delle domande incontrate
 // ══════════════════════════════════════════════════════════════════════════
 
@@ -1961,6 +2197,7 @@ function renderCandidatura() {
   <div class="actions-bar">
     <button class="btn" onclick="App.openEventoForm('${c.id}')">📅 Aggiungi appuntamento</button>
     <button class="btn good" onclick="App.allenati('${c.id}')">🎯 Allenati per questo colloquio</button>
+    <button class="btn ghost" onclick="App.palestraDa('${c.id}')">🏋️ Palestra e dossier</button>
     <button class="btn ghost" onclick="App.openCandForm('${c.id}')">✏️ Modifica</button>
     <button class="btn ghost" style="color:var(--crit-text)" onclick="App.deleteCand('${c.id}')">Elimina</button>
   </div>

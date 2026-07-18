@@ -7,7 +7,7 @@ const t = s => LANG === 'en' ? (I18N_EN[s] ?? s) : s;
 
 const I18N_EN = {
   // Navigazione e shell
-  'Simulazione': 'Practice', 'Colloqui': 'Interviews', 'Ripasso': 'Review', 'Storico': 'History',
+  'Simulazione': 'Practice', 'Palestra': 'Gym', 'Colloqui': 'Interviews', 'Ripasso': 'Review', 'Storico': 'History',
   'Allenati con un recruiter AI in locale': 'Train with a local AI recruiter',
   'Esporta dati': 'Export data', 'Importa dati': 'Import data', 'Azzera dati': 'Reset data',
   'AI locale attiva': 'Local AI active', 'AI via API ☁️': 'AI via API ☁️', 'AI nel browser 🌐': 'In-browser AI 🌐',

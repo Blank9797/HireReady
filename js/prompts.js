@@ -179,6 +179,51 @@ Tutti i testi in ${sessLingua(s) === 'en' ? 'inglese' : 'italiano'}, concreti e 
   ];
 }
 
+// ── Palestra: agenti caccia-domande e dossier azienda ────────────────────
+const AGENTI_DOMANDE = [
+  { id: 'hr', nome: 'Agente HR', icona: '🧑‍💼',
+    focus: 'le domande COMPORTAMENTALI e motivazionali che i recruiter fanno davvero per questa posizione: metodo STAR, soft skill tipiche del ruolo, motivazione, gestione di conflitti e fallimenti' },
+  { id: 'tec', nome: 'Agente tecnico', icona: '🧪',
+    focus: 'le domande TECNICHE che le aziende fanno davvero ai colloqui per questa posizione e livello: concetti chiave, strumenti del mestiere, buone pratiche, errori comuni da riconoscere' },
+  { id: 'case', nome: 'Agente casi reali', icona: '🎯',
+    focus: 'le domande a SCENARIO e i casi pratici tipici dei colloqui per questa posizione: "cosa faresti se…", problemi realistici del lavoro quotidiano, priorità e trade-off, più 1-2 domande scomode/trabocchetto frequenti' },
+];
+
+function buildCacciaMessages(agente, pos, liv, annuncio) {
+  const ann = (annuncio || '').trim();
+  return [
+    {
+      role: 'system',
+      content: `Sei "${agente.nome}", specializzato nel raccogliere ${agente.focus}.
+Prepara le domande più frequenti e probabili per un colloquio da ${pos}, livello ${liv}, come le farebbe una vera azienda italiana.${ann ? '\nTieni conto dell\'annuncio fornito.' : ''}
+Rispondi SOLO con un oggetto JSON valido:
+{"domande": [{"domanda": "<testo della domanda>", "categoria": "<1-3 parole, es. 'motivazione', 'React', 'gestione priorità'>", "difficolta": <1 facile, 2 media, 3 difficile>}, … 7 voci]}
+Domande concrete e specifiche per il ruolo, mai generiche. Tutti i testi in italiano.`,
+    },
+    { role: 'user', content: `Posizione: ${pos}\nLivello: ${liv}${ann ? `\n\nAnnuncio:\n${ann.slice(0, 800)}` : ''}` },
+  ];
+}
+
+function buildDossierMessages(azienda, pos, wikiTesto) {
+  return [
+    {
+      role: 'system',
+      content: `Sei un ricercatore che prepara un candidato al colloquio con l'azienda "${azienda}" per la posizione di ${pos}.
+${wikiTesto ? 'Ti fornisco un estratto da Wikipedia: usalo come fonte principale. Se l\'estratto NON sembra riferirsi a questa azienda, ignoralo e dillo nel campo "attenzione".' : 'Non ho trovato l\'azienda su Wikipedia: usa solo ciò che sai con certezza e dichiara i limiti nel campo "attenzione".'}
+Non inventare numeri o fatti: se non sai, ometti.
+Rispondi SOLO con un oggetto JSON valido:
+{"profilo": "<2-3 frasi: chi è l'azienda e cosa fa>",
+"punti_chiave": ["<3-6 fatti utili da citare al colloquio: prodotti, mercati, storia, dimensioni>"],
+"perche_noi": "<come potresti rispondere a 'perché vuoi lavorare proprio da noi?' in 2-3 frasi>",
+"dettagli_utili": ["<3-5 consigli pratici per il giorno del colloquio con QUESTA azienda: cosa citare, tono, cosa studiare la sera prima>"],
+"domande_da_fare": ["<3 domande intelligenti da fare al recruiter, specifiche per questa azienda>"],
+"attenzione": "<eventuali limiti/incertezze di queste informazioni, oppure stringa vuota>"}
+Ogni lista deve avere ALMENO 3 voci (a meno che tu non sappia davvero nulla dell'azienda). Tutti i testi in italiano.`,
+    },
+    { role: 'user', content: `Azienda: ${azienda}\nPosizione: ${pos}${wikiTesto ? `\n\nEstratto Wikipedia:\n${wikiTesto}` : ''}` },
+  ];
+}
+
 function buildSintesiMessages(tipo, s, dettaglio) {
   const nomeFase = tipo === 'tecnico' ? 'colloquio tecnico' : 'colloquio conoscitivo';
   const righe = dettaglio.map((d, i) =>
