@@ -204,23 +204,29 @@ Domande concrete e specifiche per il ruolo, mai generiche. Tutti i testi in ital
   ];
 }
 
-function buildDossierMessages(azienda, pos, wikiTesto) {
+function buildDossierMessages(azienda, pos, wikiTesto, factsTesto) {
+  const fonti = [wikiTesto ? 'l\'articolo Wikipedia' : null, factsTesto ? 'i dati strutturati da Wikidata' : null].filter(Boolean).join(' e ');
   return [
     {
       role: 'system',
       content: `Sei un ricercatore che prepara un candidato al colloquio con l'azienda "${azienda}" per la posizione di ${pos}.
-${wikiTesto ? 'Ti fornisco un estratto da Wikipedia: usalo come fonte principale. Se l\'estratto NON sembra riferirsi a questa azienda, ignoralo e dillo nel campo "attenzione".' : 'Non ho trovato l\'azienda su Wikipedia: usa solo ciò che sai con certezza e dichiara i limiti nel campo "attenzione".'}
+${fonti ? `Ti fornisco ${fonti}: usali come fonte principale. Se il materiale NON sembra riferirsi a questa azienda, ignoralo e dillo nel campo "attenzione".` : 'Non ho trovato fonti web sull\'azienda: usa solo ciò che sai con certezza e dichiara i limiti nel campo "attenzione".'}
 Non inventare numeri o fatti: se non sai, ometti.
 Rispondi SOLO con un oggetto JSON valido:
 {"profilo": "<2-3 frasi: chi è l'azienda e cosa fa>",
-"punti_chiave": ["<3-6 fatti utili da citare al colloquio: prodotti, mercati, storia, dimensioni>"],
+"storia": "<2-3 frasi: le tappe principali della storia dell'azienda>",
+"prodotti": ["<3-6 prodotti/servizi/mercati principali>"],
+"punti_chiave": ["<4-6 fatti utili da citare al colloquio: numeri, acquisizioni, traguardi, particolarità>"],
 "perche_noi": "<come potresti rispondere a 'perché vuoi lavorare proprio da noi?' in 2-3 frasi>",
-"dettagli_utili": ["<3-5 consigli pratici per il giorno del colloquio con QUESTA azienda: cosa citare, tono, cosa studiare la sera prima>"],
+"dettagli_utili": ["<4-5 consigli pratici per il giorno del colloquio con QUESTA azienda: cosa citare, tono, cosa studiare la sera prima>"],
 "domande_da_fare": ["<3 domande intelligenti da fare al recruiter, specifiche per questa azienda>"],
 "attenzione": "<eventuali limiti/incertezze di queste informazioni, oppure stringa vuota>"}
 Ogni lista deve avere ALMENO 3 voci (a meno che tu non sappia davvero nulla dell'azienda). Tutti i testi in italiano.`,
     },
-    { role: 'user', content: `Azienda: ${azienda}\nPosizione: ${pos}${wikiTesto ? `\n\nEstratto Wikipedia:\n${wikiTesto}` : ''}` },
+    {
+      role: 'user',
+      content: `Azienda: ${azienda}\nPosizione: ${pos}${factsTesto ? `\n\nDati strutturati (Wikidata):\n${factsTesto}` : ''}${wikiTesto ? `\n\nArticolo Wikipedia:\n${wikiTesto}` : ''}`,
+    },
   ];
 }
 

@@ -1548,7 +1548,8 @@ App.submitDrill = async i => {
   if (btn) btn.disabled = false;
 };
 
-// Dossier azienda: Wikipedia (CORS aperto) + sintesi AI
+// Dossier azienda: Wikipedia + Wikidata + GitHub + Hacker News (tutte fonti
+// gratuite con CORS aperto, interrogabili direttamente dal browser) + sintesi AI
 async function cercaWikipedia(nome) {
   for (const lang of ['it', 'en']) {
     try {
@@ -1556,19 +1557,85 @@ async function cercaWikipedia(nome) {
         { signal: AbortSignal.timeout(7000) }).then(r => r.json());
       const title = s.query?.search?.[0]?.title;
       if (!title) continue;
-      const e = await fetch(`https://${lang}.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&titles=${encodeURIComponent(title)}&format=json&origin=*`,
-        { signal: AbortSignal.timeout(7000) }).then(r => r.json());
-      const testo = (Object.values(e.query?.pages || {})[0]?.extract || '').slice(0, 1600);
+      // articolo completo in testo semplice (non solo l'incipit)
+      const e = await fetch(`https://${lang}.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&titles=${encodeURIComponent(title)}&format=json&origin=*`,
+        { signal: AbortSignal.timeout(9000) }).then(r => r.json());
+      const testo = (Object.values(e.query?.pages || {})[0]?.extract || '').replace(/\n{3,}/g, '\n\n').slice(0, 9000);
       if (testo) return { lang, title, testo, url: `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, '_'))}` };
     } catch { /* prova la lingua successiva */ }
   }
   return null;
 }
 
+// Fatti strutturati da Wikidata (fondazione, dipendenti, fatturato, sede…)
+const WD_PROPS = { P571: 'Fondazione', P159: 'Sede', P17: 'Paese', P452: 'Settore', P112: 'Fondatori', P1128: 'Dipendenti', P2139: 'Fatturato', P856: 'Sito' };
+async function wikidataFacts(title, lang) {
+  try {
+    const e = await fetch(`https://www.wikidata.org/w/api.php?action=wbgetentities&sites=${lang}wiki&titles=${encodeURIComponent(title)}&props=claims&format=json&origin=*`,
+      { signal: AbortSignal.timeout(8000) }).then(r => r.json());
+    const ent = Object.values(e.entities || {})[0];
+    if (!ent?.claims) return null;
+    const c = ent.claims;
+    const facts = [];
+    const qids = [];
+    const snak = p => c[p]?.filter(x => x.mainsnak?.datavalue).map(x => x.mainsnak.datavalue.value) || [];
+    const anno = snak('P571')[0]?.time?.slice(1, 5);
+    if (anno) facts.push({ k: 'Fondazione', v: anno });
+    for (const p of ['P159', 'P17', 'P452', 'P112']) {
+      const ids = snak(p).map(v => v.id).filter(Boolean).slice(0, p === 'P112' ? 3 : 1);
+      if (ids.length) { facts.push({ k: WD_PROPS[p], qids: ids }); qids.push(...ids); }
+    }
+    const dip = snak('P1128')[0]?.amount;
+    if (dip) facts.push({ k: 'Dipendenti', v: new Intl.NumberFormat('it-IT').format(Math.abs(+dip)) });
+    const fat = snak('P2139')[0]?.amount;
+    if (fat) facts.push({ k: 'Fatturato', v: '~' + new Intl.NumberFormat('it-IT', { notation: 'compact' }).format(Math.abs(+fat)) });
+    const sito = snak('P856')[0];
+    if (typeof sito === 'string') facts.push({ k: 'Sito', v: sito, link: true });
+    // risolve i nomi delle entità citate (sede, settore, fondatori…)
+    if (qids.length) {
+      const l = await fetch(`https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${qids.join('|')}&props=labels&languages=it|en&format=json&origin=*`,
+        { signal: AbortSignal.timeout(8000) }).then(r => r.json());
+      const label = id => l.entities?.[id]?.labels?.it?.value || l.entities?.[id]?.labels?.en?.value || null;
+      for (const f of facts) if (f.qids) { f.v = f.qids.map(label).filter(Boolean).join(', '); delete f.qids; }
+    }
+    const puliti = facts.filter(f => f.v);
+    return puliti.length ? puliti : null;
+  } catch { return null; }
+}
+
+// Menzioni recenti su Hacker News (Algolia API, CORS aperto)
+async function hnMentions(nome) {
+  try {
+    const r = await fetch(`https://hn.algolia.com/api/v1/search?query=${encodeURIComponent('"' + nome + '"')}&tags=story&hitsPerPage=4`,
+      { signal: AbortSignal.timeout(7000) }).then(x => x.json());
+    const hits = (r.hits || []).filter(h => h.title).map(h => ({
+      titolo: h.title, url: h.url || `https://news.ycombinator.com/item?id=${h.objectID}`,
+      punti: h.points || 0, anno: (h.created_at || '').slice(0, 4),
+    }));
+    return hits.length ? hits : null;
+  } catch { return null; }
+}
+
+// Organizzazione GitHub (utile per aziende tech)
+async function githubOrg(nome) {
+  try {
+    const s = await fetch(`https://api.github.com/search/users?q=${encodeURIComponent(nome)}+type:org&per_page=1`,
+      { signal: AbortSignal.timeout(7000) }).then(r => r.json());
+    const org = s.items?.[0];
+    if (!org) return null;
+    const semplice = x => x.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!semplice(org.login).includes(semplice(nome).slice(0, 8)) && !semplice(nome).includes(semplice(org.login))) return null;
+    const d = await fetch(`https://api.github.com/orgs/${org.login}`, { signal: AbortSignal.timeout(7000) }).then(r => r.json());
+    return { login: org.login, url: `https://github.com/${org.login}`, repos: d.public_repos, followers: d.followers, bio: d.description || '' };
+  } catch { return null; }
+}
+
 function normalizeDossier(j) {
   if (!j) return null;
   const out = {
     profilo: String(j.profilo || '').trim(),
+    storia: String(j.storia || '').trim(),
+    prodotti: asList(j.prodotti),
     punti_chiave: asList(j.punti_chiave),
     perche_noi: String(j.perche_noi || '').trim(),
     dettagli_utili: asList(j.dettagli_utili),
@@ -1585,11 +1652,19 @@ App.generaDossier = async () => {
   App.busy = 'dossier';
   render();
   try {
-    palProgDossier('📖 Cerco l’azienda su Wikipedia…');
-    const wiki = await cercaWikipedia(p.azienda.trim());
-    palProgDossier(wiki ? `📖 Trovata: “${wiki.title}” — 🧠 sintetizzo il dossier…` : '🧠 Non su Wikipedia: uso solo l’AI (con cautela)…');
-    const dati = await callJSONRetry(buildDossierMessages(p.azienda.trim(), p.pos || 'la posizione', wiki?.testo), normalizeDossier);
-    state.palestra.dossier = { azienda: p.azienda.trim(), ts: Date.now(), wiki, dati };
+    const nome = p.azienda.trim();
+    palProgDossier('📖 Cerco l’articolo completo su Wikipedia…');
+    const wiki = await cercaWikipedia(nome);
+    palProgDossier('🗃 Interrogo Wikidata, GitHub e Hacker News…');
+    const [facts, hn, gh] = (await Promise.allSettled([
+      wiki ? wikidataFacts(wiki.title, wiki.lang) : Promise.resolve(null),
+      hnMentions(nome),
+      githubOrg(nome),
+    ])).map(r => r.status === 'fulfilled' ? r.value : null);
+    palProgDossier((wiki ? `📖 “${wiki.title}” trovata — ` : '') + '🧠 sintetizzo il dossier…');
+    const factsTesto = facts ? facts.map(f => `${f.k}: ${f.v}`).join('\n') : '';
+    const dati = await callJSONRetry(buildDossierMessages(nome, p.pos || 'la posizione', wiki?.testo, factsTesto), normalizeDossier);
+    state.palestra.dossier = { azienda: nome, ts: Date.now(), wiki: wiki ? { title: wiki.title, lang: wiki.lang, url: wiki.url } : null, facts, hn, gh, dati };
     save();
   } catch (e) {
     if (e.name !== 'AbortError') toast('Errore AI: ' + (e.message || e));
@@ -1645,16 +1720,28 @@ function renderPalestra() {
       <a class="btn small ghost" target="_blank" rel="noopener" href="https://news.google.com/search?q=${q(az)}&hl=it">📰 Notizie recenti</a>
     </div>`;
   };
+  const factChips = dos?.facts?.length ? `<div class="del-chips" style="margin:10px 0">
+      ${dos.facts.map(f => f.link
+        ? `<a class="del-chip" style="text-decoration:none" href="${esc(f.v.startsWith('http') ? f.v : 'https://' + f.v)}" target="_blank" rel="noopener">🔗 ${esc(f.v.replace(/^https?:\/\//, ''))}</a>`
+        : `<span class="del-chip"><b>${esc(f.k)}:</b>&nbsp;${esc(f.v)}</span>`).join('')}
+    </div>` : '';
+  const ghChip = dos?.gh ? `<div class="hint" style="margin:6px 0">💻 GitHub: <a href="${esc(dos.gh.url)}" target="_blank" rel="noopener">${esc(dos.gh.login)}</a> — ${dos.gh.repos} repo pubblici, ${dos.gh.followers} follower${dos.gh.bio ? ' · ' + esc(dos.gh.bio.slice(0, 80)) : ''}</div>` : '';
+  const hnList = dos?.hn?.length ? `<div class="eval-h blue" style="margin-top:10px">Se ne parla (Hacker News)</div>
+    <ul class="g-ul">${dos.hn.map(h => `<li><a href="${esc(h.url)}" target="_blank" rel="noopener">${esc(h.titolo)}</a> <span class="td-sub">(${h.anno} · ${h.punti} punti)</span></li>`).join('')}</ul>` : '';
   const dossierHtml = busyDossier
     ? `<div class="phase-loading" style="padding:20px"><div class="spinner"></div><b id="dos-prog">Preparazione…</b></div>`
     : dos ? `
-      <div class="hint" style="margin:8px 0 4px">Dossier su <b>${esc(dos.azienda)}</b> — ${fmtD(dos.ts)}${dos.wiki ? ` · fonte: <a href="${esc(dos.wiki.url)}" target="_blank" rel="noopener">Wikipedia (${dos.wiki.lang})</a>` : ' · ⚠️ solo conoscenza AI, verifica i fatti'}</div>
+      <div class="hint" style="margin:8px 0 4px">Dossier su <b>${esc(dos.azienda)}</b> — ${fmtD(dos.ts)} · fonti: ${dos.wiki ? `<a href="${esc(dos.wiki.url)}" target="_blank" rel="noopener">Wikipedia (${dos.wiki.lang})</a>` : 'Wikipedia ✗'}${dos.facts ? ' · Wikidata ✓' : ''}${dos.gh ? ' · GitHub ✓' : ''}${dos.hn ? ' · Hacker News ✓' : ''}${!dos.wiki ? ' · ⚠️ verifica i fatti' : ''}</div>
       ${dos.dati.attenzione ? `<div class="hint" style="color:var(--warn-text)">⚠️ ${esc(dos.dati.attenzione)}</div>` : ''}
+      ${factChips}${ghChip}
       <div class="feedback-box" style="margin-top:8px">${esc(dos.dati.profilo)}</div>
+      ${dos.dati.storia ? `<div class="eval-h blue" style="margin-top:10px">Storia in breve</div><p style="font-size:13.5px;color:var(--ink-2);margin:6px 0">${esc(dos.dati.storia)}</p>` : ''}
+      ${dos.dati.prodotti?.length ? `<div class="eval-h blue" style="margin-top:10px">Prodotti e mercati</div><ul class="g-ul">${dos.dati.prodotti.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
       ${dos.dati.punti_chiave.length ? `<div class="eval-h blue" style="margin-top:10px">Fatti da citare al colloquio</div><ul class="g-ul">${dos.dati.punti_chiave.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
       ${dos.dati.perche_noi ? `<div class="eval-h ok" style="margin-top:10px">“Perché vuoi lavorare da noi?”</div><p style="font-size:13.5px;color:var(--ink-2);margin:6px 0">${esc(dos.dati.perche_noi)}</p>` : ''}
       ${dos.dati.dettagli_utili.length ? `<div class="eval-h blue" style="margin-top:10px">Il giorno del colloquio</div><ul class="g-ul">${dos.dati.dettagli_utili.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
       ${dos.dati.domande_da_fare.length ? `<div class="eval-h ok" style="margin-top:10px">Domande da fare a loro</div><ul class="g-ul">${dos.dati.domande_da_fare.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+      ${hnList}
       ${linkRicerca(dos.azienda)}` : '';
 
   return `<div class="view-head"><div><h1>🏋️ Palestra</h1>
