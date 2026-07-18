@@ -6,7 +6,8 @@ const LS_KEY = 'colloquio_sim_v1';
 function freshState() {
   return {
     setup: { posizione: '', livello: 'Junior', cv: '', annuncio: '', lingua: 'it', stile: 'neutro', nCon: N_DOMANDE.conoscitivo, nTec: N_DOMANDE.tecnico, model: '', tts: false,
-      motore: 'ollama', apiUrl: 'https://api.groq.com/openai/v1', apiKey: '', apiModel: 'llama-3.3-70b-versatile' },
+      motore: 'ollama', apiUrl: 'https://api.groq.com/openai/v1', apiKey: '', apiModel: 'llama-3.3-70b-versatile',
+      uiLang: 'it', webllmModel: 'Llama-3.2-3B-Instruct-q4f16_1-MLC' },
     profili: [], sessions: [], candidature: [], activeId: null, seq: 1,
   };
 }
@@ -29,6 +30,7 @@ function loadState() {
 }
 let state = loadState();
 const save = () => localStorage.setItem(LS_KEY, JSON.stringify(state));
+setLang(state.setup.uiLang);
 
 // ── Helper ──
 const $ = sel => document.querySelector(sel);
@@ -192,9 +194,87 @@ async function apiChat(messages, { json = false, temperature = 0.7, onToken = nu
   return full;
 }
 
+// ── Motore WebLLM: modello che gira DENTRO il browser via WebGPU ─────────
+// Zero installazioni: il modello si scarica una volta (poi resta in cache).
+const WEBLLM_MODELS = [
+  { id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC', label: 'Llama 3.2 1B — leggero (~0.9 GB)' },
+  { id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC', label: 'Llama 3.2 3B — consigliato (~1.8 GB)' },
+  { id: 'Qwen2.5-7B-Instruct-q4f16_1-MLC', label: 'Qwen 2.5 7B — qualità (~4.3 GB)' },
+];
+const WEBLLM = { lib: null, engine: null, engineModel: null, loading: false, progress: '' };
+
+function webllmProgress(txt) {
+  WEBLLM.progress = txt;
+  const el = $('#webllm-prog'); if (el) el.textContent = txt;
+  const pb = $('#pill-webllm'); if (pb) pb.textContent = txt;
+}
+
+async function checkWebllm() {
+  if (!navigator.gpu) {
+    AI.ok = false; AI.models = [];
+    AI.err = 'WebGPU non disponibile in questo browser: usa Chrome/Edge aggiornati, oppure scegli Ollama o API esterna';
+    return;
+  }
+  AI.ok = true; AI.err = null; AI.base = 'webllm';
+  AI.models = WEBLLM_MODELS.map(m => m.id);
+}
+
+async function ensureWebllm() {
+  const modello = state.setup.webllmModel;
+  if (WEBLLM.engine && WEBLLM.engineModel === modello) return WEBLLM.engine;
+  if (WEBLLM.loading) throw new Error('il modello si sta ancora caricando, attendi qualche secondo');
+  WEBLLM.loading = true;
+  try {
+    if (!WEBLLM.lib) {
+      webllmProgress('Scarico la libreria WebLLM…');
+      WEBLLM.lib = await import('https://esm.run/@mlc-ai/web-llm@0.2.79');
+    }
+    webllmProgress('Preparo il modello…');
+    if (WEBLLM.engine) { try { await WEBLLM.engine.unload(); } catch { /* ok */ } }
+    WEBLLM.engine = await WEBLLM.lib.CreateMLCEngine(modello, {
+      initProgressCallback: p => webllmProgress(p.text || ''),
+    });
+    WEBLLM.engineModel = modello;
+    webllmProgress(modello.split('-q')[0] + ' pronto ✓');
+    return WEBLLM.engine;
+  } finally {
+    WEBLLM.loading = false;
+  }
+}
+
+async function webllmChat(messages, { json = false, temperature = 0.7, onToken = null } = {}) {
+  const engine = await ensureWebllm();
+  const req = { messages, temperature, stream: !!onToken };
+  if (json) req.response_format = { type: 'json_object' };
+  try {
+    if (!onToken) {
+      const out = await engine.chat.completions.create(req);
+      return out.choices?.[0]?.message?.content ?? '';
+    }
+    let full = '';
+    const chunks = await engine.chat.completions.create(req);
+    for await (const c of chunks) {
+      const t2 = c.choices?.[0]?.delta?.content || '';
+      if (t2) { full += t2; onToken(full); }
+    }
+    return full;
+  } catch (e) {
+    // alcuni modelli non supportano il json mode: riprova senza vincolo
+    if (json && /response_format|grammar|json/i.test(String(e))) {
+      delete req.response_format;
+      const out = await engine.chat.completions.create({ ...req, stream: false });
+      return out.choices?.[0]?.message?.content ?? '';
+    }
+    throw e;
+  }
+}
+
 const usaApi = () => state.setup.motore === 'api';
-async function checkAI() { return usaApi() ? checkApi() : checkOllama(); }
-async function aiChat(messages, opts) { return usaApi() ? apiChat(messages, opts) : ollamaChat(messages, opts); }
+const usaWebllm = () => state.setup.motore === 'webllm';
+async function checkAI() { return usaApi() ? checkApi() : usaWebllm() ? checkWebllm() : checkOllama(); }
+async function aiChat(messages, opts) {
+  return usaApi() ? apiChat(messages, opts) : usaWebllm() ? webllmChat(messages, opts) : ollamaChat(messages, opts);
+}
 
 async function ollamaChat(messages, { json = false, temperature = 0.7, onToken = null, model = null } = {}) {
   const body = {
@@ -279,7 +359,7 @@ function normalizeSintesi(j) {
 
 // Modelli distinti per i giudici, se l'utente ne ha installati altri (solo Ollama)
 function juryModels() {
-  if (usaApi()) return null;
+  if (state.setup.motore !== 'ollama') return null;
   const main = state.setup.model;
   const altri = AI.models.filter(m => m !== main);
   if (!altri.length) return null;
@@ -303,6 +383,15 @@ const App = {
 
 // ── Render principale ──
 function render() {
+  // etichette localizzate della shell
+  const navLbl = { sim: '🎯 ' + t('Simulazione'), colloqui: '📅 ' + t('Colloqui'), ripasso: '📚 ' + t('Ripasso'), storico: '🕘 ' + t('Storico') };
+  document.querySelectorAll('.nav-btn').forEach(b => { if (navLbl[b.dataset.view]) b.textContent = navLbl[b.dataset.view]; });
+  const langBtn = $('#lang-toggle');
+  if (langBtn) langBtn.textContent = LANG === 'en' ? '🌐 Italiano' : '🌐 English';
+  $('#btn-export') && ($('#btn-export').textContent = '⬇️ ' + t('Esporta dati'));
+  $('#btn-import') && ($('#btn-import').textContent = '⬆️ ' + t('Importa dati'));
+  $('#btn-reset') && ($('#btn-reset').textContent = '🗑️ ' + t('Azzera dati'));
+  document.querySelector('.logo-sub') && (document.querySelector('.logo-sub').textContent = t('Allenati con un recruiter AI in locale'));
   document.querySelectorAll('.nav-btn').forEach(b => {
     const v = b.dataset.view;
     b.classList.toggle('active',
@@ -312,10 +401,13 @@ function render() {
       (v === 'storico' && ['storico', 'report'].includes(App.view)));
   });
   const pill = $('#ai-pill');
+  const motore = state.setup.motore;
   pill.innerHTML = AI.ok
-    ? (usaApi()
-      ? `<span class="dot ok"></span><span>AI via API ☁️<br><b>${esc(state.setup.apiModel)}</b></span>`
-      : `<span class="dot ok"></span><span>AI locale attiva<br><b>${esc(state.setup.model)}</b></span>`)
+    ? (motore === 'api'
+      ? `<span class="dot ok"></span><span>${t('AI via API ☁️')}<br><b>${esc(state.setup.apiModel)}</b></span>`
+      : motore === 'webllm'
+        ? `<span class="dot ok"></span><span>${t('AI nel browser 🌐')}<br><b id="pill-webllm">${esc(WEBLLM.progress || state.setup.webllmModel.split('-q')[0])}</b></span>`
+        : `<span class="dot ok"></span><span>${t('AI locale attiva')}<br><b>${esc(state.setup.model)}</b></span>`)
     : `<span class="dot ko"></span><span>${esc(AI.err || 'AI non disponibile')}</span>`;
   const v = $('#view');
   switch (App.view) {
@@ -351,15 +443,15 @@ function renderHome() {
   const s = state.setup;
   const act = activeSession();
   const ripresa = act && act.fase !== 'report' ? `<div class="card" style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-      <div><b>Simulazione in corso:</b> ${esc(act.posizione)} (${esc(act.livello)}) — fase ${esc(faseLabel(act.fase))}</div>
+      <div><b>${t('Simulazione in corso:')}</b> ${esc(act.posizione)} (${esc(act.livello)}) — ${t('fase')} ${esc(faseLabel(act.fase))}</div>
       <div style="display:flex;gap:8px">
-        <button class="btn small" onclick="App.go('sim')">Riprendi</button>
-        <button class="btn small ghost" onclick="App.abbandona()">Abbandona</button>
+        <button class="btn small" onclick="App.go('sim')">${t('Riprendi')}</button>
+        <button class="btn small ghost" onclick="App.abbandona()">${t('Abbandona')}</button>
       </div>
     </div>` : '';
   const livOpts = LIVELLI.map(l => `<option ${s.livello === l ? 'selected' : ''}>${l}</option>`).join('');
   const modOpts = AI.models.map(m => `<option ${s.model === m ? 'selected' : ''}>${m}</option>`).join('');
-  const stileOpts = Object.entries(STILI).map(([k, v]) => `<option value="${k}" ${s.stile === k ? 'selected' : ''}>${v.label}</option>`).join('');
+  const stileOpts = Object.entries(STILI).map(([k, v]) => `<option value="${k}" ${s.stile === k ? 'selected' : ''}>${t(v.label)}</option>`).join('');
   const lingOpts = Object.entries(LINGUE).map(([k, v]) => `<option value="${k}" ${s.lingua === k ? 'selected' : ''}>${v}</option>`).join('');
   const nOpts = n => Array.from({ length: 8 }, (_, i) => i + 3).map(x => `<option ${x === n ? 'selected' : ''}>${x}</option>`).join('');
   const profOpts = state.profili.map(p => `<option value="${p.id}">${esc(p.nome)}</option>`).join('');
@@ -372,7 +464,7 @@ function renderHome() {
       1. Installa Ollama da ollama.com e scarica un modello: <code>ollama pull gemma3:4b</code><br>
       2. Chiudi Ollama e riavvialo autorizzando questo sito:</div>
       <div class="cmd-row"><code>${esc(cmdOrigins)}</code>
-        <button class="btn small ghost" onclick="App.copyText('${esc(cmdOrigins)}')">📋 Copia</button></div>
+        <button class="btn small ghost" onclick="App.copyText('${esc(cmdOrigins)}')">${t('📋 Copia')}</button></div>
       <div class="hint">Se vedi <code>address already in use</code>, Ollama è già acceso: chiudi prima l’app di Ollama
       (icona nella barra menu → Quit) e rilancia il comando. Su Mac, in alternativa:
       <code>launchctl setenv OLLAMA_ORIGINS "${esc(location.origin)}"</code> e poi riavvia l’app di Ollama.</div>
@@ -384,7 +476,7 @@ function renderHome() {
   const aiWarn = !AI.ok ? `<div class="card" style="margin-bottom:16px;border-color:var(--crit)">
       <b style="color:var(--crit-text)">⚠️ ${esc(AI.err || 'AI non disponibile')}</b>
       ${HOSTED ? hostedHelp : localHelp}
-      <button class="btn small ghost" style="margin-top:10px" onclick="App.retryAI()">🔄 Riprova connessione</button>
+      <button class="btn small ghost" style="margin-top:10px" onclick="App.retryAI()">${t('🔄 Riprova connessione')}</button>
     </div>` : '';
   const profili = state.profili.length ? `<div class="prof-row">
       <select id="prof-select">${profOpts}</select>
@@ -392,61 +484,70 @@ function renderHome() {
       <button type="button" class="btn small ghost" style="color:var(--crit-text)" onclick="App.eliminaProfilo()">🗑</button>
     </div>` : '';
   return `<div class="view-head">
-    <div><h1>Preparati al colloquio</h1>
-    <div class="sub">Un recruiter AI (in locale) simula il vero processo di selezione: può scartarti a ogni fase, proprio come nella realtà.</div></div>
+    <div><h1>${t('Preparati al colloquio')}</h1>
+    <div class="sub">${t('Un recruiter AI (in locale) simula il vero processo di selezione: può scartarti a ogni fase, proprio come nella realtà.')}</div></div>
   </div>
   ${ripresa}${aiWarn}
   <div class="how-grid">
-    <div class="how"><span class="h-icon">📄</span><b>1 · Screening CV</b>L’AI confronta il tuo CV con posizione, livello e annuncio. Se non sei in linea, sei fuori — con i consigli per sistemarlo.</div>
-    <div class="how"><span class="h-icon">💬</span><b>2 · Colloquio conoscitivo</b>Domande su motivazione, percorso e soft skill. Rispondi in chat (o a voce) come in un vero colloquio.</div>
-    <div class="how"><span class="h-icon">🧪</span><b>3 · Colloquio tecnico</b>Domande tecniche calibrate su posizione e livello, con eventuali approfondimenti.</div>
-    <div class="how"><span class="h-icon">🏁</span><b>4 · Report finale</b>Punteggi, feedback domanda per domanda con risposte modello, consigli per quello vero.</div>
+    <div class="how"><span class="h-icon">📄</span><b>${t('1 · Screening CV')}</b>${t('L’AI confronta il tuo CV con posizione, livello e annuncio. Se non sei in linea, sei fuori — con i consigli per sistemarlo.')}</div>
+    <div class="how"><span class="h-icon">💬</span><b>${t('2 · Colloquio conoscitivo')}</b>${t('Domande su motivazione, percorso e soft skill. Rispondi in chat (o a voce) come in un vero colloquio.')}</div>
+    <div class="how"><span class="h-icon">🧪</span><b>${t('3 · Colloquio tecnico')}</b>${t('Domande tecniche calibrate su posizione e livello, con eventuali approfondimenti.')}</div>
+    <div class="how"><span class="h-icon">🏁</span><b>${t('4 · Report finale')}</b>${t('Punteggi, feedback domanda per domanda con risposte modello, consigli per quello vero.')}</div>
   </div>
   <form class="card" onsubmit="App.startSim(event)">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-      <h2 style="margin:0">La tua candidatura</h2>${profili}
+      <h2 style="margin:0">${t('La tua candidatura')}</h2>${profili}
     </div>
     <div class="setup-grid">
-      <div><label>Per quale posizione ti stai candidando? *</label>
+      <div><label>${t('Per quale posizione ti stai candidando? *')}</label>
         <input name="posizione" required placeholder="es. Sviluppatore Frontend React, Data Analyst, Store Manager…" value="${esc(s.posizione)}"></div>
-      <div><label>Livello *</label><select name="livello">${livOpts}</select></div>
+      <div><label>${t('Livello *')}</label><select name="livello">${livOpts}</select></div>
     </div>
     <div class="setup-grid4">
-      <div><label>Stile recruiter</label><select name="stile">${stileOpts}</select></div>
-      <div><label>Lingua colloquio</label><select name="lingua">${lingOpts}</select></div>
-      <div><label>Domande conoscitivo</label><select name="nCon">${nOpts(s.nCon)}</select></div>
-      <div><label>Domande tecnico</label><select name="nTec">${nOpts(s.nTec)}</select></div>
+      <div><label>${t('Stile recruiter')}</label><select name="stile">${stileOpts}</select></div>
+      <div><label>${t('Lingua colloquio')}</label><select name="lingua">${lingOpts}</select></div>
+      <div><label>${t('Domande conoscitivo')}</label><select name="nCon">${nOpts(s.nCon)}</select></div>
+      <div><label>${t('Domande tecnico')}</label><select name="nTec">${nOpts(s.nTec)}</select></div>
     </div>
-    <label>Annuncio di lavoro (consigliato: rende screening e domande molto più mirati)</label>
+    <label>${t('Annuncio di lavoro (consigliato: rende screening e domande molto più mirati)')}</label>
     <textarea name="annuncio" class="annuncio" placeholder="Incolla qui il testo dell’annuncio: requisiti, responsabilità, tecnologie richieste…">${esc(s.annuncio)}</textarea>
-    <label>Il tuo CV *</label>
+    <label>${t('Il tuo CV *')}</label>
     <div class="cv-tools">
-      <button type="button" class="btn small ghost" onclick="document.getElementById('cv-pdf').click()">📎 Carica da PDF</button>
-      <span class="hint">oppure trascina il PDF sul riquadro, oppure incolla il testo</span>
+      <button type="button" class="btn small ghost" onclick="document.getElementById('cv-pdf').click()">📎 ${t('Carica da PDF')}</button>
+      <span class="hint">${t('oppure trascina il PDF sul riquadro, oppure incolla il testo')}</span>
     </div>
     <textarea name="cv" id="cv-text" class="cv" required placeholder="Incolla il testo del tuo CV: esperienze, formazione, competenze…"
       ondragover="event.preventDefault();this.classList.add('drop-hover')"
       ondragleave="this.classList.remove('drop-hover')"
       ondrop="App.dropCv(event)">${esc(s.cv)}</textarea>
-    <div class="hint">Tutto resta sul tuo computer: l’AI gira in locale, niente cloud.</div>
-    <label>Motore AI</label>
+    <div class="hint">${t('Tutto resta sul tuo computer: l’AI gira in locale, niente cloud.')}</div>
+    <label>${t('Motore AI')}</label>
     <div class="engine-row">
-      <label class="engine-opt ${!usaApi() ? 'sel' : ''}"><input type="radio" name="motoreAI" value="ollama" ${!usaApi() ? 'checked' : ''} onchange="App.setMotore('ollama')"> 🖥 Ollama (locale, privato)</label>
-      <label class="engine-opt ${usaApi() ? 'sel' : ''}"><input type="radio" name="motoreAI" value="api" ${usaApi() ? 'checked' : ''} onchange="App.setMotore('api')"> ☁️ API esterna (Groq / OpenAI…)</label>
+      <label class="engine-opt ${s.motore === 'ollama' ? 'sel' : ''}"><input type="radio" name="motoreAI" value="ollama" ${s.motore === 'ollama' ? 'checked' : ''} onchange="App.setMotore('ollama')"> ${t('🖥 Ollama (locale, privato)')}</label>
+      <label class="engine-opt ${s.motore === 'api' ? 'sel' : ''}"><input type="radio" name="motoreAI" value="api" ${s.motore === 'api' ? 'checked' : ''} onchange="App.setMotore('api')"> ${t('☁️ API esterna (Groq / OpenAI…)')}</label>
+      <label class="engine-opt ${s.motore === 'webllm' ? 'sel' : ''}"><input type="radio" name="motoreAI" value="webllm" ${s.motore === 'webllm' ? 'checked' : ''} onchange="App.setMotore('webllm')"> ${t('🌐 Nel browser (WebGPU)')}</label>
     </div>
-    ${usaApi() ? `<div class="api-box">
+    ${s.motore === 'api' ? `<div class="api-box">
       <div class="setup-grid">
-        <div><label>URL base (OpenAI-compatibile)</label><input value="${esc(s.apiUrl)}" onchange="App.setApiField('apiUrl',this.value)" placeholder="https://api.groq.com/openai/v1"></div>
-        <div><label>Modello</label><input value="${esc(s.apiModel)}" onchange="App.setApiField('apiModel',this.value)" list="api-models" placeholder="llama-3.3-70b-versatile">
+        <div><label>${t('URL base (OpenAI-compatibile)')}</label><input value="${esc(s.apiUrl)}" onchange="App.setApiField('apiUrl',this.value)" placeholder="https://api.groq.com/openai/v1"></div>
+        <div><label>${t('Modello')}</label><input value="${esc(s.apiModel)}" onchange="App.setApiField('apiModel',this.value)" list="api-models" placeholder="llama-3.3-70b-versatile">
           <datalist id="api-models">${AI.models.slice(0, 40).map(m => `<option value="${esc(m)}">`).join('')}</datalist></div>
       </div>
-      <label>Chiave API</label><input type="password" value="${esc(s.apiKey)}" onchange="App.setApiField('apiKey',this.value)" placeholder="incolla qui la chiave — resta solo nel tuo browser">
+      <label>${t('Chiave API')}</label><input type="password" value="${esc(s.apiKey)}" onchange="App.setApiField('apiKey',this.value)" placeholder="incolla qui la chiave — resta solo nel tuo browser">
       <div class="hint">Chiave gratuita su <b>console.groq.com/keys</b>. La chiave viene salvata solo in questo browser e usata solo per parlare con l’API che hai scelto.</div>
-    </div>`
-    : (AI.models.length > 1 ? `<div style="max-width:340px"><label>Modello Ollama</label><select onchange="App.setModel(this.value)">${modOpts}</select></div>` : '')}
+    </div>` : ''}
+    ${s.motore === 'webllm' ? `<div class="api-box">
+      <label>${t('Modello')}</label>
+      <select onchange="App.setWebllmModel(this.value)">${WEBLLM_MODELS.map(m => `<option value="${m.id}" ${s.webllmModel === m.id ? 'selected' : ''}>${esc(m.label)}</option>`).join('')}</select>
+      <div class="hint" style="margin-top:6px">Il modello gira <b>dentro il browser</b> (WebGPU): niente da installare, privacy totale.
+      Al primo uso si scarica una volta e resta in cache. Serve Chrome/Edge recente${navigator.gpu ? '' : ' — <b style="color:var(--crit-text)">questo browser non supporta WebGPU</b>'}.</div>
+      <div class="hint" id="webllm-prog" style="margin-top:4px;font-weight:600">${esc(WEBLLM.progress || '')}</div>
+      ${WEBLLM.engine && WEBLLM.engineModel === s.webllmModel ? '' : `<button class="btn small ghost" style="margin-top:8px" onclick="App.precaricaWebllm()">⬇️ ${WEBLLM.loading ? 'Caricamento…' : 'Scarica/carica ora il modello'}</button>`}
+    </div>` : ''}
+    ${s.motore === 'ollama' && AI.models.length > 1 ? `<div style="max-width:340px"><label>${t('Modello Ollama')}</label><select onchange="App.setModel(this.value)">${modOpts}</select></div>` : ''}
     <div class="actions-bar">
-      <button type="submit" class="btn" ${AI.ok ? '' : 'disabled'}>🚀 Inizia la simulazione</button>
-      <button type="button" class="btn ghost" onclick="App.salvaProfilo(event)">💾 Salva come profilo</button>
+      <button type="submit" class="btn" ${AI.ok ? '' : 'disabled'}>${t('🚀 Inizia la simulazione')}</button>
+      <button type="button" class="btn ghost" onclick="App.salvaProfilo(event)">${t('💾 Salva come profilo')}</button>
     </div>
   </form>`;
 }
@@ -454,12 +555,25 @@ function renderHome() {
 App.retryAI = async () => { AI.err = 'Verifica in corso…'; render(); await checkAI(); render(); };
 App.setMotore = async m => {
   state.setup.motore = m; save();
-  AI.err = 'Verifica in corso…'; AI.ok = false; render();
+  AI.err = t('Verifica in corso…'); AI.ok = false; render();
   await checkAI(); render();
+};
+App.toggleLang = () => {
+  state.setup.uiLang = LANG === 'en' ? 'it' : 'en';
+  setLang(state.setup.uiLang);
+  save(); render();
 };
 App.setApiField = async (campo, valore) => {
   state.setup[campo] = valore.trim(); save();
   if (usaApi()) { await checkAI(); render(); }
+};
+App.setWebllmModel = m => { state.setup.webllmModel = m; save(); render(); };
+App.precaricaWebllm = async () => {
+  if (WEBLLM.loading) return;
+  render();
+  try { await ensureWebllm(); toast('Modello nel browser pronto ✓'); }
+  catch (e) { toast('Errore caricamento: ' + (e.message || e)); }
+  render();
 };
 App.copyText = text => {
   const done = () => toast('Copiato ✓');
@@ -581,7 +695,7 @@ App.abbandona = () => {
 };
 
 // ── Vista simulazione ──
-const faseLabel = f => FASI.find(x => x.id === f)?.label ?? f;
+const faseLabel = f => t(FASI.find(x => x.id === f)?.label ?? f);
 
 function renderStepper(sess) {
   const order = ['screening', 'conoscitivo', 'tecnico', 'domande', 'report'];
@@ -593,7 +707,7 @@ function renderStepper(sess) {
       cls = val.esito === 'superato' ? 'done' : 'failed';
       extra = `<span class="s-score">${val.punteggio}</span>`;
     } else if (i === cur) cls = 'active';
-    return `<div class="step ${cls}">${f.icon} ${f.label} ${extra}</div>`;
+    return `<div class="step ${cls}">${f.icon} ${t(f.label)} ${extra}</div>`;
   }).join('') + `</div>`;
 }
 
@@ -631,23 +745,23 @@ function renderScreening(sess) {
   const r = sess.screening;
   const ok = r.esito === 'superato';
   return `<div class="card">
-    <h2>Esito dello screening CV</h2>
+    <h2>${t('Esito dello screening CV')}</h2>
     <div class="score-row">
       <div class="score-big" style="color:${scoreText(r.punteggio)}">${r.punteggio}<small>/100</small></div>
       <div class="score-track"><div class="score-fill" style="width:${r.punteggio}%;background:${scoreColor(r.punteggio)}"></div></div>
-      <span class="badge ${ok ? 'ok' : 'bad'}">${ok ? '✓ CV in linea' : '✕ Scartato'}</span>
+      <span class="badge ${ok ? 'ok' : 'bad'}">${ok ? t('✓ CV in linea') : t('✕ Scartato')}</span>
     </div>
     <div class="feedback-box">${esc(r.motivazione)}</div>
     <div class="eval-lists">
-      <div><div class="eval-h ok">Punti in linea</div><ul>${r.punti_in_linea.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
-      <div><div class="eval-h bad">Lacune rispetto alla posizione</div><ul>${r.lacune.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
+      <div><div class="eval-h ok">${t('Punti in linea')}</div><ul>${r.punti_in_linea.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
+      <div><div class="eval-h bad">${t('Lacune rispetto alla posizione')}</div><ul>${r.lacune.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
     </div>
-    ${r.consigli_cv.length ? `<div style="margin-top:12px"><div class="eval-h blue">Consigli per migliorare il CV</div>
+    ${r.consigli_cv.length ? `<div style="margin-top:12px"><div class="eval-h blue">${t('Consigli per migliorare il CV')}</div>
       <ul style="margin:6px 0 0;padding-left:18px;font-size:13.5px;color:var(--ink-2)">${r.consigli_cv.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
     <div class="actions-bar">
-      ${ok ? `<button class="btn good" onclick="App.avviaIntervista('conoscitivo')">💬 Inizia il colloquio conoscitivo</button>`
-           : `<button class="btn" onclick="App.rifaiScreening()">✏️ Modifica il CV e riprova</button>`}
-      <button class="btn ghost" onclick="App.chiudiSim()">Chiudi e vai al report</button>
+      ${ok ? `<button class="btn good" onclick="App.avviaIntervista('conoscitivo')">${t('💬 Inizia il colloquio conoscitivo')}</button>`
+           : `<button class="btn" onclick="App.rifaiScreening()">${t('✏️ Modifica il CV e riprova')}</button>`}
+      <button class="btn ghost" onclick="App.chiudiSim()">${t('Chiudi e vai al report')}</button>
     </div>
   </div>`;
 }
@@ -720,38 +834,38 @@ function renderIntervista(sess, tipo) {
       <div class="hint" style="margin-top:4px">Ogni risposta viene votata da HR, esperto tecnico e hiring manager: può richiedere 1-2 minuti.</div></div>`;
   }
   const bubbles = fase.transcript.map(m => `<div class="bubble ${m.role === 'assistant' ? 'ai' : 'me'}">
-      <span class="b-who">${m.role === 'assistant' ? '🧑‍💼 Recruiter' : '🙋 Tu'}${m.tempo ? ` <span class="b-time">⏱ ${m.tempo}s</span>` : ''}</span>${esc(m.content)}</div>`).join('');
+      <span class="b-who">${m.role === 'assistant' ? t('🧑‍💼 Recruiter') : t('🙋 Tu')}${m.tempo ? ` <span class="b-time">⏱ ${m.tempo}s</span>` : ''}</span>${esc(m.content)}</div>`).join('');
   const typing = App.busy === 'chat'
     ? `<div class="bubble ai"><span class="b-who">🧑‍💼 Recruiter</span><span id="stream-bubble"></span><span class="typing"><i></i><i></i><i></i></span></div>` : '';
   const last = fase.transcript.at(-1);
   const needResume = !App.busy && (fase.transcript.length === 0 || last?.role === 'user');
   const resume = needResume
-    ? `<div style="text-align:center;padding:8px"><button class="btn" onclick="nextTurno('${tipo}')">▶️ ${fase.transcript.length ? 'Continua il colloquio' : 'Fai iniziare il recruiter'}</button></div>` : '';
+    ? `<div style="text-align:center;padding:8px"><button class="btn" onclick="nextTurno('${tipo}')">${fase.transcript.length ? t('▶️ Continua il colloquio') : t('▶️ Fai iniziare il recruiter')}</button></div>` : '';
   const canWrite = !App.busy && last?.role === 'assistant';
   const sttOk = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
   // strumenti sopra l'input
   const tools = [];
-  if (App.busy === 'chat') tools.push(`<button class="btn small ghost" onclick="App.stopGen()">⏹ Ferma</button>`);
+  if (App.busy === 'chat') tools.push(`<button class="btn small ghost" onclick="App.stopGen()">${t('⏹ Ferma')}</button>`);
   if (!App.busy && last?.role === 'assistant')
-    tools.push(`<button class="btn small ghost" onclick="App.rigenera('${tipo}')">🔄 Rigenera domanda</button>`);
+    tools.push(`<button class="btn small ghost" onclick="App.rigenera('${tipo}')">${t('🔄 Rigenera domanda')}</button>`);
   if (!App.busy && fase.transcript.some(m => m.role === 'user'))
-    tools.push(`<button class="btn small ghost" onclick="App.correggi('${tipo}')">✏️ Correggi ultima risposta</button>`);
+    tools.push(`<button class="btn small ghost" onclick="App.correggi('${tipo}')">${t('✏️ Correggi ultima risposta')}</button>`);
   return `<div class="card chat-card">
     <div class="chat-head">
-      <div><div class="ch-title">${tipo === 'domande' ? '🙋 Le tue domande al recruiter' : tipo === 'tecnico' ? '🧪 Colloquio tecnico' : '💬 Colloquio conoscitivo'}</div>
-      <div class="ch-sub">domanda ${Math.min(nAns + 1, nTot)} di ~${nTot}${canWrite ? ` · <b>⏱ <span id="live-timer">0s</span></b>` : ''}</div></div>
+      <div><div class="ch-title">${tipo === 'domande' ? t('🙋 Le tue domande al recruiter') : tipo === 'tecnico' ? t('🧪 Colloquio tecnico') : t('💬 Colloquio conoscitivo')}</div>
+      <div class="ch-sub">${t('domanda')} ${Math.min(nAns + 1, nTot)} ${t('di')} ~${nTot}${canWrite ? ` · <b>⏱ <span id="live-timer">0s</span></b>` : ''}</div></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <button class="btn small ghost ${state.setup.tts ? 'tts-on' : ''}" onclick="App.toggleTts()" title="Il recruiter legge le domande a voce alta">${state.setup.tts ? '🔊' : '🔇'} Voce</button>
-        ${nAns >= 1 && !App.busy ? `<button class="btn small ghost" onclick="valuta('${tipo}')">🏁 Termina e valuta ora</button>` : ''}
+        <button class="btn small ghost ${state.setup.tts ? 'tts-on' : ''}" onclick="App.toggleTts()" title="Il recruiter legge le domande a voce alta">${state.setup.tts ? '🔊' : '🔇'} ${t('Voce')}</button>
+        ${nAns >= 1 && !App.busy ? `<button class="btn small ghost" onclick="valuta('${tipo}')">${t('🏁 Termina e valuta ora')}</button>` : ''}
       </div>
     </div>
     <div class="chat-msgs" id="chat-msgs">${bubbles}${typing}${resume}</div>
     ${tools.length ? `<div class="chat-tools">${tools.join('')}</div>` : ''}
     <div class="chat-input">
       ${sttOk ? `<button class="mic-btn" id="mic-btn" title="Rispondi a voce (dettatura del browser: può usare servizi cloud)" ${canWrite ? '' : 'disabled'} onclick="App.toggleMic()">🎙️</button>` : ''}
-      <textarea id="chat-input" placeholder="${canWrite ? (tipo === 'domande' ? 'Scrivi una domanda da fare al recruiter… Invio per inviare' : 'Scrivi (o detta col microfono) la tua risposta… Invio per inviare') : 'Attendi il recruiter…'}"
+      <textarea id="chat-input" placeholder="${canWrite ? (tipo === 'domande' ? t('Scrivi una domanda da fare al recruiter… Invio per inviare') : t('Scrivi (o detta col microfono) la tua risposta… Invio per inviare')) : t('Attendi il recruiter…')}"
         ${canWrite ? '' : 'disabled'} onkeydown="App.chatKey(event,'${tipo}')"></textarea>
-      <button class="btn" ${canWrite ? '' : 'disabled'} onclick="App.sendRisposta('${tipo}')">Invia</button>
+      <button class="btn" ${canWrite ? '' : 'disabled'} onclick="App.sendRisposta('${tipo}')">${t('Invia')}</button>
     </div>
   </div>`;
 }
@@ -775,7 +889,10 @@ App.sendRisposta = tipo => {
   else nextTurno(tipo);
 };
 
-App.stopGen = () => { App.abortCtrl?.abort(); };
+App.stopGen = () => {
+  if (usaWebllm()) { try { WEBLLM.engine?.interruptGenerate(); } catch { /* ok */ } }
+  App.abortCtrl?.abort();
+};
 App.rigenera = tipo => {
   const fase = activeSession()[tipo];
   if (fase.transcript.at(-1)?.role !== 'assistant') return;
@@ -953,7 +1070,7 @@ function renderDelivery(transcript, lingua) {
   const m = analizzaDelivery(transcript, lingua);
   if (!m) return '';
   const fil = m.fillers.length ? m.fillers.slice(0, 4).map(f => `“${f.f}”×${f.n}`).join(', ') : 'nessuno rilevato 👌';
-  return `<div class="delivery"><div class="eval-h blue">📊 Come hai risposto (analisi automatica)</div>
+  return `<div class="delivery"><div class="eval-h blue">${t('📊 Come hai risposto (analisi automatica)')}</div>
     <div class="del-chips">
       <span class="del-chip">✍️ ${m.media} parole in media</span>
       ${m.tMedio ? `<span class="del-chip">⏱ ${m.tMedio}s in media a risposta</span>` : ''}
@@ -1004,11 +1121,11 @@ function speak(text, lingua) {
 // ── Valutazione fase ──
 function renderDettaglio(det) {
   if (!det?.length) return '';
-  return `<div style="margin-top:14px"><div class="eval-h blue">Feedback domanda per domanda</div>
+  return `<div style="margin-top:14px"><div class="eval-h blue">${t('Feedback domanda per domanda')}</div>
   ${det.map((d, i) => {
     const juryRow = d.giudici?.length ? `<div class="jury-row">
         ${d.giudici.map(g => `<span class="jury-chip" title="${esc(g.nome)}${g.modello ? ' · ' + esc(g.modello) : ''}">${g.icona} ${g.voto}/10</span>`).join('')}
-        ${d.accordo ? `<span class="badge ${d.accordo === 'unanime' ? 'ok' : 'warn'}">giuria ${d.accordo}</span>` : ''}
+        ${d.accordo ? `<span class="badge ${d.accordo === 'unanime' ? 'ok' : 'warn'}">${t('giuria ' + d.accordo)}</span>` : ''}
       </div>` : '';
     const commenti = d.giudici?.length
       ? d.giudici.map(g => `<p><b>${g.icona} ${esc(g.nome)}${g.modello ? ` <span class="jm">(${esc(g.modello)})</span>` : ''} — ${g.voto}/10:</b> ${esc(g.commento)}</p>`).join('')
@@ -1019,7 +1136,7 @@ function renderDettaglio(det) {
       ${d.accordo === 'divisa' ? '<span class="badge warn">⚖️ divisa</span>' : ''}</summary>
     <div class="qd-body">
       ${juryRow}${commenti}
-      ${d.risposta_modello ? `<p class="qd-model"><b>💡 Risposta modello:</b> ${esc(d.risposta_modello)}</p>` : ''}
+      ${d.risposta_modello ? `<p class="qd-model"><b>${t('💡 Risposta modello:')}</b> ${esc(d.risposta_modello)}</p>` : ''}
     </div>
   </details>`;
   }).join('')}</div>`;
@@ -1032,26 +1149,26 @@ function renderValutazione(sess, tipo) {
   const isCon = tipo === 'conoscitivo';
   const azioni = ok
     ? (isCon
-      ? `<button class="btn good" onclick="App.avviaIntervista('tecnico')">🧪 Prosegui al colloquio tecnico</button>`
-      : `<button class="btn good" onclick="App.avviaIntervista('domande')">🙋 Fase finale: fai TU le domande</button>
-         <button class="btn ghost" onclick="App.chiudiSim()">Salta → report</button>`)
-    : `<button class="btn" onclick="App.riprovaFase('${tipo}')">🔁 Riprova questo colloquio</button>
+      ? `<button class="btn good" onclick="App.avviaIntervista('tecnico')">${t('🧪 Prosegui al colloquio tecnico')}</button>`
+      : `<button class="btn good" onclick="App.avviaIntervista('domande')">${t('🙋 Fase finale: fai TU le domande')}</button>
+         <button class="btn ghost" onclick="App.chiudiSim()">${t('Salta → report')}</button>`)
+    : `<button class="btn" onclick="App.riprovaFase('${tipo}')">${t('🔁 Riprova questo colloquio')}</button>
        <button class="btn ghost" onclick="App.chiudiSim()">Chiudi e vai al report</button>`;
   return `<div class="card">
-    <h2>Valutazione del colloquio ${isCon ? 'conoscitivo' : 'tecnico'}
+    <h2>${isCon ? t('Valutazione del colloquio conoscitivo') : t('Valutazione del colloquio tecnico')}
       ${v.giuria ? `<span class="badge stage" style="margin-left:6px">🧑‍⚖️ ${esc(v.giuria)}</span>` : ''}</h2>
     <div class="score-row">
       <div class="score-big" style="color:${scoreText(v.punteggio)}">${v.punteggio}<small>/100</small></div>
       <div class="score-track"><div class="score-fill" style="width:${v.punteggio}%;background:${scoreColor(v.punteggio)}"></div></div>
-      <span class="badge ${ok ? 'ok' : 'bad'}">${ok ? '✓ Superato' : '✕ Scartato'}</span>
+      <span class="badge ${ok ? 'ok' : 'bad'}">${ok ? t('✓ Superato') : t('✕ Scartato')}</span>
     </div>
     <div class="feedback-box">${esc(v.motivazione)}</div>
     ${renderDelivery(sess[tipo].transcript, sessLingua(sess))}
     <div class="eval-lists">
-      <div><div class="eval-h ok">Punti di forza</div><ul>${v.punti_forza.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
-      <div><div class="eval-h bad">Aree di miglioramento</div><ul>${v.aree_miglioramento.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
+      <div><div class="eval-h ok">${t('Punti di forza')}</div><ul>${v.punti_forza.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
+      <div><div class="eval-h bad">${t('Aree di miglioramento')}</div><ul>${v.aree_miglioramento.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
     </div>
-    ${v.consigli.length ? `<div style="margin-top:12px"><div class="eval-h blue">Consigli per prepararti</div>
+    ${v.consigli.length ? `<div style="margin-top:12px"><div class="eval-h blue">${t('Consigli per prepararti')}</div>
       <ul style="margin:6px 0 0;padding-left:18px;font-size:13.5px;color:var(--ink-2)">${v.consigli.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
     ${renderDettaglio(v.dettaglio)}
     ${renderTranscript(sess[tipo].transcript)}
@@ -1062,20 +1179,20 @@ function renderValutazione(sess, tipo) {
 function renderValutazioneDomande(sess) {
   const v = sess.domande.valutazione;
   return `<div class="card">
-    <h2>Le tue domande al recruiter <span class="badge stage" style="margin-left:6px">🎁 fase bonus — non elimina</span></h2>
+    <h2>Le tue domande al recruiter <span class="badge stage" style="margin-left:6px">${t('🎁 fase bonus — non elimina')}</span></h2>
     <div class="score-row">
       <div class="score-big" style="color:${scoreText(v.punteggio)}">${v.punteggio}<small>/100</small></div>
       <div class="score-track"><div class="score-fill" style="width:${v.punteggio}%;background:${scoreColor(v.punteggio)}"></div></div>
     </div>
     <div class="feedback-box">${esc(v.motivazione)}</div>
     <div class="eval-lists">
-      <div><div class="eval-h ok">Cosa è piaciuto</div><ul>${v.punti_forza.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
-      <div><div class="eval-h bad">Da migliorare</div><ul>${v.aree_miglioramento.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
+      <div><div class="eval-h ok">${t('Cosa è piaciuto')}</div><ul>${v.punti_forza.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
+      <div><div class="eval-h bad">${t('Da migliorare')}</div><ul>${v.aree_miglioramento.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
     </div>
-    ${v.domande_modello.length ? `<div style="margin-top:12px"><div class="eval-h blue">Domande che avresti potuto fare</div>
+    ${v.domande_modello.length ? `<div style="margin-top:12px"><div class="eval-h blue">${t('Domande che avresti potuto fare')}</div>
       <ul style="margin:6px 0 0;padding-left:18px;font-size:13.5px;color:var(--ink-2)">${v.domande_modello.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
     ${renderTranscript(sess.domande.transcript)}
-    <div class="actions-bar"><button class="btn good" onclick="App.chiudiSim()">🏁 Vai al report finale</button></div>
+    <div class="actions-bar"><button class="btn good" onclick="App.chiudiSim()">${t('🏁 Vai al report finale')}</button></div>
   </div>`;
 }
 
@@ -1109,7 +1226,7 @@ const ESITI = {
 
 function renderTranscript(transcript) {
   if (!transcript?.length) return '';
-  return `<details class="transcript"><summary>Rileggi la trascrizione (${transcript.length} messaggi)</summary>
+  return `<details class="transcript"><summary>${t('Rileggi la trascrizione')} (${transcript.length} ${t('messaggi')})</summary>
     ${transcript.map(m => `<div class="tr-line"><b>${m.role === 'assistant' ? '🧑‍💼 Recruiter' : '🙋 Tu'}${m.tempo ? ` · ⏱ ${m.tempo}s` : ''}</b>${esc(m.content)}</div>`).join('')}
   </details>`;
 }
@@ -1160,7 +1277,7 @@ function confrontoPrecedente(sess) {
 function renderReport(sess) {
   const e = ESITI[sess.esitoFinale] || ESITI.interrotta;
   return `<div class="card" style="margin-bottom:14px;text-align:center;padding:26px">
-    <span class="badge ${e.cls}" style="font-size:15px;padding:6px 16px">${e.label}</span>
+    <span class="badge ${e.cls}" style="font-size:15px;padding:6px 16px">${t(e.label)}</span>
     <div class="hint" style="margin-top:8px">${esc(sess.posizione)} · ${esc(sess.livello)} · ${fmtD(sess.ts)}</div>
     ${confrontoPrecedente(sess)}
   </div>
@@ -1175,9 +1292,9 @@ function renderReport(sess) {
   ${sess.domande?.valutazione ? faseReport('🙋 Le tue domande al recruiter', sess.domande.valutazione,
     { key: 'punti_forza', label: 'Cosa è piaciuto' }, { key: 'aree_miglioramento', label: 'Da migliorare' }, 'domande_modello', sess.domande.transcript, '', true) : ''}
   <div class="actions-bar no-print">
-    <button class="btn ghost" onclick="App.copiaReport('${sess.id}')">📋 Copia report</button>
-    <button class="btn ghost" onclick="window.print()">🖨️ Stampa / PDF</button>
-    <button class="btn" onclick="App.nuovaSim()">🚀 Nuova simulazione</button>
+    <button class="btn ghost" onclick="App.copiaReport('${sess.id}')">${t('📋 Copia report')}</button>
+    <button class="btn ghost" onclick="window.print()">${t('🖨️ Stampa / PDF')}</button>
+    <button class="btn" onclick="App.nuovaSim()">${t('🚀 Nuova simulazione')}</button>
   </div>`;
 }
 
@@ -1289,7 +1406,7 @@ function trendCharts() {
 function renderStorico() {
   const list = [...state.sessions].sort((a, b) => b.ts - a.ts);
   if (!list.length) {
-    return `<div class="view-head"><div><h1>Storico</h1><div class="sub">Le tue simulazioni passate</div></div></div>
+    return `<div class="view-head"><div><h1>${t('Storico')}</h1><div class="sub">${t('Le tue simulazioni passate')}</div></div></div>
     <div class="card empty"><div class="e-icon">🕘</div><h3>Nessuna simulazione</h3>
     <p>Quando completi una simulazione la ritrovi qui, con report e trascrizioni.</p>
     <button class="btn" style="margin-top:8px" onclick="App.go('home')">Inizia la prima</button></div>`;
@@ -1315,7 +1432,7 @@ function renderStorico() {
       </div>
     </div>`;
   }).join('');
-  return `<div class="view-head"><div><h1>Storico</h1><div class="sub">${list.length} simulazioni</div></div></div>
+  return `<div class="view-head"><div><h1>${t('Storico')}</h1><div class="sub">${list.length} ${t('simulazioni')}</div></div></div>
   ${trendCharts()}${items}`;
 }
 
@@ -1393,10 +1510,10 @@ function renderRipasso() {
   const guida = App.busy === 'guida'
     ? `<div class="card phase-loading" style="margin-bottom:14px"><div class="spinner"></div>Il coach sta preparando la tua guida…</div>`
     : `<div class="card" style="margin-bottom:14px">
-      <h2>📚 Guida di preparazione</h2>
+      <h2>${t('📚 Guida di preparazione')}</h2>
       <div class="hint">Generata dall’AI su misura di posizione, CV e annuncio impostati nella tab Simulazione.</div>
       <div class="actions-bar">
-        <button class="btn" ${AI.ok ? '' : 'disabled'} onclick="App.generaGuida()">${g ? '🔄 Rigenera' : '✨ Genera la guida'}</button>
+        <button class="btn" ${AI.ok ? '' : 'disabled'} onclick="App.generaGuida()">${g ? t('🔄 Rigenera') : t('✨ Genera la guida')}</button>
         ${g ? `<button class="btn ghost" onclick="App.copiaGuida()">📋 Copia</button>` : ''}
       </div>
       ${g ? `<div class="hint" style="margin:10px 0 4px">Guida per <b>${esc(g.posizione)}</b> (${esc(g.livello)}) — ${fmtD(g.ts)}</div>
@@ -1423,8 +1540,8 @@ function renderRipasso() {
     </div></details>`;
   }).join('');
 
-  return `<div class="view-head"><div><h1>Ripasso</h1>
-    <div class="sub">La guida di preparazione e tutte le domande incontrate nelle simulazioni</div></div></div>
+  return `<div class="view-head"><div><h1>${t('Ripasso')}</h1>
+    <div class="sub">${t('La guida di preparazione e tutte le domande incontrate nelle simulazioni')}</div></div></div>
   ${guida}
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">

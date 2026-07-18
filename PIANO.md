@@ -110,3 +110,14 @@ recruiting-app/
   risposta, intercalari rilevati, numeri concreti — in valutazioni e report.
 - **Confronto tra simulazioni**: delta CV/conoscitivo/tecnico rispetto alla
   precedente per la stessa posizione, nel report.
+
+## 7. v2.6 — Fase 0 completata: EN + WebLLM (implementate)
+- **Interfaccia in inglese**: toggle 🌐 IT/EN persistente; dizionario in js/i18n.js
+  (chiavi = stringhe italiane, fallback automatico); tradotte tutte le superfici
+  del percorso principale (nav, home, chat, valutazioni, report, stepper).
+  Le valutazioni AI seguono la lingua del colloquio (EN → giudizi in inglese).
+- **WebLLM — AI nel browser**: terzo motore "🌐 Nel browser (WebGPU)": il modello
+  gira dentro la pagina (Llama 3.2 1B/3B, Qwen 7B), scaricato una volta e messo
+  in cache. Zero installazioni: la versione Vercel funziona per chiunque senza
+  Ollama né chiavi API. Streaming, JSON mode con fallback, stop via
+  interruptGenerate, progress live del download.

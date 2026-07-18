@@ -129,7 +129,7 @@ function buildGiudiceMessages(giudice, tipo, s, domanda, risposta, tempo) {
 Il tuo criterio di giudizio: ${giudice.focus}.${en}
 Valuta SOLO la risposta del candidato alla domanda fornita, non fare altre domande.
 Scala voti: 0-3 insufficiente, 4-5 debole, 6-7 buona, 8-10 eccellente (rara). Risposte vuote, evasive o generiche meritano voti bassi. Sii severo e realistico come in una vera selezione.
-Rispondi SOLO con un oggetto JSON valido: {"voto": <0-10>, "commento": "<1-2 frasi in italiano: cosa andava bene e cosa mancava>"${modello}}`,
+Rispondi SOLO con un oggetto JSON valido: {"voto": <0-10>, "commento": "<1-2 frasi in ${sessLingua(s) === 'en' ? 'inglese' : 'italiano'}: cosa andava bene e cosa mancava>"${modello}}`,
     },
     {
       role: 'user',
@@ -152,7 +152,7 @@ function buildEvalDomandeMessages(s, transcript) {
 Domande forti: mostrano interesse genuino, preparazione sull'azienda/ruolo, orientamento alla crescita e all'impatto. Domande deboli: solo ferie/orari/stipendio come prima domanda, generiche, o nessuna domanda.
 Rispondi SOLO con un oggetto JSON valido:
 {"punteggio": <0-100>, "feedback": "<2-3 frasi rivolte al candidato (dai del tu)>", "punti_forza": ["..."], "aree_miglioramento": ["..."], "domande_modello": ["<3 esempi di ottime domande da fare per questa posizione>"]}
-Tutti i testi in italiano.`,
+Tutti i testi in ${sessLingua(s) === 'en' ? 'inglese' : 'italiano'}.`,
     },
     { role: 'user', content: `Trascrizione della fase finale:\n\n${testo}` },
   ];
@@ -170,7 +170,7 @@ Rispondi SOLO con un oggetto JSON valido:
 "domande_tecniche": [{"domanda": "<domanda tecnica probabile>", "cosa_ripassare": "<argomento da studiare>"}, … 5-6 voci],
 "gap": ["<lacune del CV rispetto alla posizione, con come compensarle a voce>"],
 "domande_da_fare": ["<3 ottime domande da fare al recruiter>"]}
-Tutti i testi in italiano, concreti e specifici per questa posizione.`,
+Tutti i testi in ${sessLingua(s) === 'en' ? 'inglese' : 'italiano'}, concreti e specifici per questa posizione.`,
     },
     {
       role: 'user',
@@ -192,7 +192,7 @@ function buildSintesiMessages(tipo, s, dettaglio) {
 Ti fornisco voti e commenti dei giudici per ogni domanda. Sintetizza il verdetto complessivo per il candidato, basandoti SOLO sui commenti dei giudici.
 Rispondi SOLO con un oggetto JSON valido:
 {"punti_forza": ["..."], "aree_miglioramento": ["..."], "feedback": "<3-4 frasi rivolte direttamente al candidato (dai del tu), che riflettano il giudizio della giuria>", "consigli": ["..."]}
-Tutti i testi in italiano.`,
+Tutti i testi in ${sessLingua(s) === 'en' ? 'inglese' : 'italiano'}.`,
     },
     { role: 'user', content: righe },
   ];
