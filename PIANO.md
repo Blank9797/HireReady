@@ -95,3 +95,18 @@ recruiting-app/
   rapido tra candidature attive, e "Allenati per questo colloquio" che precompila la
   simulazione con posizione/livello/annuncio della candidatura.
 - Rebrand in **HireReady**; repo GitHub Blank9797/HireReady.
+
+## 6. v2.4 — Potenziamento allenamento (implementate)
+- **Fase bonus "Le tue domande"**: dopo il tecnico, il candidato fa domande al
+  recruiter (che risponde con dettagli plausibili); un coach valuta la qualità
+  delle domande con esempi di domande modello. Non elimina.
+- **Guida di preparazione** (tab Ripasso): generata da posizione+CV+annuncio —
+  punti chiave, domande probabili (conoscitivo e tecniche con "cosa ripassare"),
+  lacune da gestire, domande da fare. Copiabile.
+- **Banca domande / ripasso**: tutte le domande incontrate con voto, commento e
+  risposta modello; filtro "da rivedere" (voto <6); "riprova questa domanda"
+  con giudizio secco del giudice tecnico.
+- **Metriche di delivery** (locali, senza AI): parole medie, tempo medio di
+  risposta, intercalari rilevati, numeri concreti — in valutazioni e report.
+- **Confronto tra simulazioni**: delta CV/conoscitivo/tecnico rispetto alla
+  precedente per la stessa posizione, nel report.

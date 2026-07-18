@@ -308,6 +308,7 @@ function render() {
     b.classList.toggle('active',
       (v === 'sim' && ['home', 'sim'].includes(App.view)) ||
       (v === 'colloqui' && ['colloqui', 'candidatura'].includes(App.view)) ||
+      (v === 'ripasso' && App.view === 'ripasso') ||
       (v === 'storico' && ['storico', 'report'].includes(App.view)));
   });
   const pill = $('#ai-pill');
@@ -324,6 +325,7 @@ function render() {
     case 'report': v.innerHTML = renderReportView(); break;
     case 'colloqui': v.innerHTML = renderColloqui(); break;
     case 'candidatura': v.innerHTML = renderCandidatura(); break;
+    case 'ripasso': v.innerHTML = renderRipasso(); break;
   }
   const msgs = $('#chat-msgs');
   if (msgs) msgs.scrollTop = msgs.scrollHeight;
@@ -582,7 +584,7 @@ App.abbandona = () => {
 const faseLabel = f => FASI.find(x => x.id === f)?.label ?? f;
 
 function renderStepper(sess) {
-  const order = ['screening', 'conoscitivo', 'tecnico', 'report'];
+  const order = ['screening', 'conoscitivo', 'tecnico', 'domande', 'report'];
   const cur = order.indexOf(sess.fase);
   return `<div class="stepper">` + FASI.map((f, i) => {
     let cls = '', extra = '';
@@ -603,7 +605,7 @@ function renderSim() {
     body = `<div class="card"><b style="color:var(--crit-text)">⚠️ Errore AI:</b> ${esc(App.lastError)}
       <div class="actions-bar"><button class="btn" onclick="App.retryPhase()">🔄 Riprova</button></div></div>`;
   } else if (sess.fase === 'screening') body = renderScreening(sess);
-  else if (sess.fase === 'conoscitivo' || sess.fase === 'tecnico') body = renderIntervista(sess, sess.fase);
+  else if (['conoscitivo', 'tecnico', 'domande'].includes(sess.fase)) body = renderIntervista(sess, sess.fase);
   else body = renderReport(sess);
   const meta = [sess.livello, STILI[sessStile(sess)].label.replace(/^\S+\s/, ''), sessLingua(sess) === 'en' ? 'in inglese' : null]
     .filter(Boolean).join(' · ');
@@ -708,6 +710,10 @@ function renderIntervista(sess, tipo) {
   const nTot = sessN(sess, tipo);
   const nAns = fase.transcript.filter(m => m.role === 'user').length;
   if (App.busy === 'eval' || fase._evalPending) {
+    if (tipo === 'domande') {
+      return `<div class="card phase-loading"><div class="spinner"></div>
+        Il coach sta valutando la qualità delle tue domande…</div>`;
+    }
     return `<div class="card phase-loading"><div class="spinner"></div>
       Colloquio concluso: la giuria (${GIUDICI.length} giudici indipendenti) sta valutando le tue risposte…
       <div class="hint" style="margin-top:8px"><b id="eval-progress">Preparazione…</b></div>
@@ -732,7 +738,7 @@ function renderIntervista(sess, tipo) {
     tools.push(`<button class="btn small ghost" onclick="App.correggi('${tipo}')">✏️ Correggi ultima risposta</button>`);
   return `<div class="card chat-card">
     <div class="chat-head">
-      <div><div class="ch-title">${tipo === 'tecnico' ? '🧪 Colloquio tecnico' : '💬 Colloquio conoscitivo'}</div>
+      <div><div class="ch-title">${tipo === 'domande' ? '🙋 Le tue domande al recruiter' : tipo === 'tecnico' ? '🧪 Colloquio tecnico' : '💬 Colloquio conoscitivo'}</div>
       <div class="ch-sub">domanda ${Math.min(nAns + 1, nTot)} di ~${nTot}${canWrite ? ` · <b>⏱ <span id="live-timer">0s</span></b>` : ''}</div></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn small ghost ${state.setup.tts ? 'tts-on' : ''}" onclick="App.toggleTts()" title="Il recruiter legge le domande a voce alta">${state.setup.tts ? '🔊' : '🔇'} Voce</button>
@@ -743,7 +749,7 @@ function renderIntervista(sess, tipo) {
     ${tools.length ? `<div class="chat-tools">${tools.join('')}</div>` : ''}
     <div class="chat-input">
       ${sttOk ? `<button class="mic-btn" id="mic-btn" title="Rispondi a voce (dettatura del browser: può usare servizi cloud)" ${canWrite ? '' : 'disabled'} onclick="App.toggleMic()">🎙️</button>` : ''}
-      <textarea id="chat-input" placeholder="${canWrite ? 'Scrivi (o detta col microfono) la tua risposta… Invio per inviare' : 'Attendi la domanda del recruiter…'}"
+      <textarea id="chat-input" placeholder="${canWrite ? (tipo === 'domande' ? 'Scrivi una domanda da fare al recruiter… Invio per inviare' : 'Scrivi (o detta col microfono) la tua risposta… Invio per inviare') : 'Attendi il recruiter…'}"
         ${canWrite ? '' : 'disabled'} onkeydown="App.chatKey(event,'${tipo}')"></textarea>
       <button class="btn" ${canWrite ? '' : 'disabled'} onclick="App.sendRisposta('${tipo}')">Invia</button>
     </div>
@@ -819,6 +825,7 @@ const evalProg = txt => { const el = $('#eval-progress'); if (el) el.textContent
 const shortQ = q => q.length > 110 ? q.slice(0, 107).trimEnd() + '…' : q;
 
 async function valuta(tipo) {
+  if (tipo === 'domande') return valutaDomande();
   const sess = activeSession();
   if (!sess || App.busy) return;
   const fase = sess[tipo];
@@ -891,6 +898,70 @@ async function valuta(tipo) {
 }
 const giudici_label = modelli => modelli ? `${GIUDICI.length} giudici · ${new Set(modelli).size} modelli` : `${GIUDICI.length} giudici`;
 
+// ── Fase bonus: valutazione delle domande fatte al recruiter ──
+function normalizeDomandeEval(j) {
+  if (!j) return null;
+  const p = Number(j.punteggio);
+  if (!Number.isFinite(p)) return null;
+  return {
+    punteggio: Math.max(0, Math.min(100, Math.round(p))), esito: 'superato',
+    motivazione: String(j.feedback || '').trim(),
+    punti_forza: asList(j.punti_forza), aree_miglioramento: asList(j.aree_miglioramento),
+    domande_modello: asList(j.domande_modello),
+  };
+}
+async function valutaDomande() {
+  const sess = activeSession();
+  if (!sess || App.busy) return;
+  const fase = sess.domande;
+  App.busy = 'eval'; App.lastError = null;
+  fase._evalPending = true;
+  stopMic(); speechSynthesis?.cancel?.();
+  save(); render();
+  try {
+    const j = await callJSONRetry(buildEvalDomandeMessages(sess, fase.transcript), normalizeDomandeEval);
+    fase.valutazione = j;
+    fase._evalPending = false;
+    save();
+  } catch (e) {
+    if (e.name !== 'AbortError') App.lastError = e.message || String(e);
+  }
+  App.busy = null;
+  render();
+}
+
+// ── Metriche di delivery (calcolate in locale, senza AI) ──
+const FILLER_WORDS = {
+  it: ['ehm', 'cioè', 'diciamo', 'tipo', 'praticamente', 'insomma', 'ecco', 'niente', 'come dire', 'in pratica'],
+  en: ['um', 'uh', 'like', 'you know', 'basically', 'actually', 'literally', 'kind of', 'sort of'],
+};
+function analizzaDelivery(transcript, lingua) {
+  const risp = (transcript || []).filter(m => m.role === 'user');
+  if (!risp.length) return null;
+  const nParole = risp.map(r => r.content.trim().split(/\s+/).filter(Boolean).length);
+  const media = Math.round(nParole.reduce((a, b) => a + b, 0) / risp.length);
+  const tempi = risp.filter(r => r.tempo).map(r => r.tempo);
+  const tMedio = tempi.length ? Math.round(tempi.reduce((a, b) => a + b, 0) / tempi.length) : null;
+  const testo = ' ' + risp.map(r => r.content.toLowerCase()).join(' ') + ' ';
+  const fillers = (FILLER_WORDS[lingua] || FILLER_WORDS.it)
+    .map(f => ({ f, n: (testo.match(new RegExp('[^a-zà-ù]' + f.replace(/ /g, '\\s+') + '(?=[^a-zà-ù])', 'g')) || []).length }))
+    .filter(x => x.n > 0).sort((a, b) => b.n - a.n);
+  const conNumeri = risp.filter(r => /\d/.test(r.content)).length;
+  return { n: risp.length, media, tMedio, fillers, conNumeri };
+}
+function renderDelivery(transcript, lingua) {
+  const m = analizzaDelivery(transcript, lingua);
+  if (!m) return '';
+  const fil = m.fillers.length ? m.fillers.slice(0, 4).map(f => `“${f.f}”×${f.n}`).join(', ') : 'nessuno rilevato 👌';
+  return `<div class="delivery"><div class="eval-h blue">📊 Come hai risposto (analisi automatica)</div>
+    <div class="del-chips">
+      <span class="del-chip">✍️ ${m.media} parole in media</span>
+      ${m.tMedio ? `<span class="del-chip">⏱ ${m.tMedio}s in media a risposta</span>` : ''}
+      <span class="del-chip">🔢 numeri concreti in ${m.conNumeri}/${m.n} risposte</span>
+      <span class="del-chip">🗣 intercalari: ${esc(fil)}</span>
+    </div></div>`;
+}
+
 // ── Voce: dettatura e sintesi ──
 let recog = null;
 function stopMic() { try { recog?.stop(); } catch {} recog = null; $('#mic-btn')?.classList.remove('rec'); }
@@ -955,13 +1026,15 @@ function renderDettaglio(det) {
 }
 
 function renderValutazione(sess, tipo) {
+  if (tipo === 'domande') return renderValutazioneDomande(sess);
   const v = sess[tipo].valutazione;
   const ok = v.esito === 'superato';
   const isCon = tipo === 'conoscitivo';
   const azioni = ok
     ? (isCon
       ? `<button class="btn good" onclick="App.avviaIntervista('tecnico')">🧪 Prosegui al colloquio tecnico</button>`
-      : `<button class="btn good" onclick="App.chiudiSim()">🏁 Vai al report finale</button>`)
+      : `<button class="btn good" onclick="App.avviaIntervista('domande')">🙋 Fase finale: fai TU le domande</button>
+         <button class="btn ghost" onclick="App.chiudiSim()">Salta → report</button>`)
     : `<button class="btn" onclick="App.riprovaFase('${tipo}')">🔁 Riprova questo colloquio</button>
        <button class="btn ghost" onclick="App.chiudiSim()">Chiudi e vai al report</button>`;
   return `<div class="card">
@@ -973,6 +1046,7 @@ function renderValutazione(sess, tipo) {
       <span class="badge ${ok ? 'ok' : 'bad'}">${ok ? '✓ Superato' : '✕ Scartato'}</span>
     </div>
     <div class="feedback-box">${esc(v.motivazione)}</div>
+    ${renderDelivery(sess[tipo].transcript, sessLingua(sess))}
     <div class="eval-lists">
       <div><div class="eval-h ok">Punti di forza</div><ul>${v.punti_forza.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
       <div><div class="eval-h bad">Aree di miglioramento</div><ul>${v.aree_miglioramento.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
@@ -982,6 +1056,26 @@ function renderValutazione(sess, tipo) {
     ${renderDettaglio(v.dettaglio)}
     ${renderTranscript(sess[tipo].transcript)}
     <div class="actions-bar">${azioni}</div>
+  </div>`;
+}
+
+function renderValutazioneDomande(sess) {
+  const v = sess.domande.valutazione;
+  return `<div class="card">
+    <h2>Le tue domande al recruiter <span class="badge stage" style="margin-left:6px">🎁 fase bonus — non elimina</span></h2>
+    <div class="score-row">
+      <div class="score-big" style="color:${scoreText(v.punteggio)}">${v.punteggio}<small>/100</small></div>
+      <div class="score-track"><div class="score-fill" style="width:${v.punteggio}%;background:${scoreColor(v.punteggio)}"></div></div>
+    </div>
+    <div class="feedback-box">${esc(v.motivazione)}</div>
+    <div class="eval-lists">
+      <div><div class="eval-h ok">Cosa è piaciuto</div><ul>${v.punti_forza.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
+      <div><div class="eval-h bad">Da migliorare</div><ul>${v.aree_miglioramento.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
+    </div>
+    ${v.domande_modello.length ? `<div style="margin-top:12px"><div class="eval-h blue">Domande che avresti potuto fare</div>
+      <ul style="margin:6px 0 0;padding-left:18px;font-size:13.5px;color:var(--ink-2)">${v.domande_modello.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
+    ${renderTranscript(sess.domande.transcript)}
+    <div class="actions-bar"><button class="btn good" onclick="App.chiudiSim()">🏁 Vai al report finale</button></div>
   </div>`;
 }
 
@@ -1020,13 +1114,16 @@ function renderTranscript(transcript) {
   </details>`;
 }
 
-function faseReport(titolo, val, listA, listB, extraKey, transcript) {
+function faseReport(titolo, val, listA, listB, extraKey, transcript, delivery = '', bonus = false) {
   if (!val) return `<div class="card" style="margin-bottom:14px"><h2>${titolo}</h2>
     <span style="color:var(--muted);font-size:13.5px">Fase non svolta.</span></div>`;
   const ok = val.esito === 'superato';
+  const badge = bonus ? `<span class="badge stage" style="margin-left:6px">🎁 bonus · ${val.punteggio}/100</span>`
+    : `<span class="badge ${ok ? 'ok' : 'bad'}" style="margin-left:6px">${ok ? '✓ superato' : '✕ scartato'} · ${val.punteggio}/100</span>`;
   return `<div class="card" style="margin-bottom:14px">
-    <h2>${titolo} <span class="badge ${ok ? 'ok' : 'bad'}" style="margin-left:6px">${ok ? '✓ superato' : '✕ scartato'} · ${val.punteggio}/100</span></h2>
+    <h2>${titolo} ${badge}</h2>
     <div class="feedback-box">${esc(val.motivazione)}</div>
+    ${delivery}
     <div class="eval-lists">
       <div><div class="eval-h ok">${listA.label}</div><ul>${val[listA.key].map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
       <div><div class="eval-h bad">${listB.label}</div><ul>${val[listB.key].map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></div>
@@ -1038,18 +1135,45 @@ function faseReport(titolo, val, listA, listB, extraKey, transcript) {
   </div>`;
 }
 
+// Confronto con la simulazione precedente per la stessa posizione+livello
+function confrontoPrecedente(sess) {
+  const key = s => (s.posizione || '').trim().toLowerCase() + '|' + s.livello;
+  const prev = state.sessions
+    .filter(s => s.id !== sess.id && key(s) === key(sess) && s.ts < sess.ts &&
+      (s.screening || s.conoscitivo?.valutazione || s.tecnico?.valutazione))
+    .sort((a, b) => b.ts - a.ts)[0];
+  if (!prev) return '';
+  const delta = (a, b) => (a != null && b != null) ? a - b : null;
+  const parts = [
+    ['CV', sess.screening?.punteggio, prev.screening?.punteggio],
+    ['Conoscitivo', sess.conoscitivo?.valutazione?.punteggio, prev.conoscitivo?.valutazione?.punteggio],
+    ['Tecnico', sess.tecnico?.valutazione?.punteggio, prev.tecnico?.valutazione?.punteggio],
+  ].map(([l, a, b]) => {
+    const d = delta(a, b);
+    return d == null ? null
+      : `${l} <b style="color:${d >= 0 ? 'var(--good-text)' : 'var(--crit-text)'}">${d >= 0 ? '+' : ''}${d}</b>`;
+  }).filter(Boolean);
+  if (!parts.length) return '';
+  return `<div class="hint" style="margin-top:8px">📈 Rispetto alla simulazione del ${fmtD(prev.ts)}: ${parts.join(' · ')}</div>`;
+}
+
 function renderReport(sess) {
   const e = ESITI[sess.esitoFinale] || ESITI.interrotta;
   return `<div class="card" style="margin-bottom:14px;text-align:center;padding:26px">
     <span class="badge ${e.cls}" style="font-size:15px;padding:6px 16px">${e.label}</span>
     <div class="hint" style="margin-top:8px">${esc(sess.posizione)} · ${esc(sess.livello)} · ${fmtD(sess.ts)}</div>
+    ${confrontoPrecedente(sess)}
   </div>
   ${faseReport('📄 Screening CV', sess.screening,
     { key: 'punti_in_linea', label: 'Punti in linea' }, { key: 'lacune', label: 'Lacune' }, 'consigli_cv', null)}
   ${faseReport('💬 Colloquio conoscitivo', sess.conoscitivo?.valutazione,
-    { key: 'punti_forza', label: 'Punti di forza' }, { key: 'aree_miglioramento', label: 'Aree di miglioramento' }, 'consigli', sess.conoscitivo?.transcript)}
+    { key: 'punti_forza', label: 'Punti di forza' }, { key: 'aree_miglioramento', label: 'Aree di miglioramento' }, 'consigli', sess.conoscitivo?.transcript,
+    renderDelivery(sess.conoscitivo?.transcript, sessLingua(sess)))}
   ${faseReport('🧪 Colloquio tecnico', sess.tecnico?.valutazione,
-    { key: 'punti_forza', label: 'Punti di forza' }, { key: 'aree_miglioramento', label: 'Aree di miglioramento' }, 'consigli', sess.tecnico?.transcript)}
+    { key: 'punti_forza', label: 'Punti di forza' }, { key: 'aree_miglioramento', label: 'Aree di miglioramento' }, 'consigli', sess.tecnico?.transcript,
+    renderDelivery(sess.tecnico?.transcript, sessLingua(sess)))}
+  ${sess.domande?.valutazione ? faseReport('🙋 Le tue domande al recruiter', sess.domande.valutazione,
+    { key: 'punti_forza', label: 'Cosa è piaciuto' }, { key: 'aree_miglioramento', label: 'Da migliorare' }, 'domande_modello', sess.domande.transcript, '', true) : ''}
   <div class="actions-bar no-print">
     <button class="btn ghost" onclick="App.copiaReport('${sess.id}')">📋 Copia report</button>
     <button class="btn ghost" onclick="window.print()">🖨️ Stampa / PDF</button>
@@ -1205,6 +1329,147 @@ App.deleteSession = id => {
   if (state.activeId === id) state.activeId = null;
   save(); render();
   toast('Simulazione eliminata');
+};
+
+// ══════════════════════════════════════════════════════════════════════════
+// RIPASSO: guida di preparazione + banca delle domande incontrate
+// ══════════════════════════════════════════════════════════════════════════
+
+function normalizeGuida(j) {
+  if (!j) return null;
+  const out = {
+    punti_chiave: asList(j.punti_chiave),
+    domande_conoscitivo: asList(j.domande_conoscitivo),
+    domande_tecniche: Array.isArray(j.domande_tecniche)
+      ? j.domande_tecniche.filter(x => x && x.domanda).map(x => ({ domanda: String(x.domanda), cosa_ripassare: String(x.cosa_ripassare || '') }))
+      : [],
+    gap: asList(j.gap),
+    domande_da_fare: asList(j.domande_da_fare),
+  };
+  return out.punti_chiave.length || out.domande_conoscitivo.length ? out : null;
+}
+
+App.generaGuida = async () => {
+  const s = state.setup;
+  if (!s.posizione || !s.cv) { toast('Prima compila posizione e CV nella tab Simulazione'); return; }
+  if (App.busy) return;
+  App.busy = 'guida'; render();
+  try {
+    const g = await callJSONRetry(buildGuidaMessages(s), normalizeGuida);
+    state.ultimaGuida = { ts: Date.now(), posizione: s.posizione, livello: s.livello, ...g };
+    save();
+  } catch (e) {
+    if (e.name !== 'AbortError') toast('Errore AI: ' + (e.message || e));
+  }
+  App.busy = null;
+  render();
+};
+
+function guidaText(g) {
+  const L = [`GUIDA DI PREPARAZIONE — ${g.posizione} (${g.livello})`, ''];
+  const sez = (t, items) => { if (items?.length) { L.push(t); items.forEach(x => L.push('  • ' + (x.domanda ? `${x.domanda}${x.cosa_ripassare ? ` [ripassa: ${x.cosa_ripassare}]` : ''}` : x))); L.push(''); } };
+  sez('PUNTI CHIAVE:', g.punti_chiave);
+  sez('DOMANDE PROBABILI (CONOSCITIVO):', g.domande_conoscitivo);
+  sez('DOMANDE TECNICHE PROBABILI:', g.domande_tecniche);
+  sez('LACUNE DA GESTIRE:', g.gap);
+  sez('DOMANDE DA FARE AL RECRUITER:', g.domande_da_fare);
+  return L.join('\n');
+}
+App.copiaGuida = () => App.copyText(guidaText(state.ultimaGuida));
+
+function bancaDomande() {
+  return state.sessions.flatMap(s =>
+    ['conoscitivo', 'tecnico'].flatMap(t =>
+      (s[t]?.valutazione?.dettaglio || []).filter(d => d.domanda).map(d => ({
+        domanda: d.domanda, voto: d.voto, risposta_modello: d.risposta_modello || '',
+        commento: d.giudici?.length ? d.giudici.map(g => g.commento).filter(Boolean)[0] || '' : (d.commento || ''),
+        tipo: t, posizione: s.posizione, livello: s.livello, ts: s.ts,
+      }))))
+    .sort((a, b) => (a.voto ?? 10) - (b.voto ?? 10));
+}
+
+function renderRipasso() {
+  const g = state.ultimaGuida;
+  const guida = App.busy === 'guida'
+    ? `<div class="card phase-loading" style="margin-bottom:14px"><div class="spinner"></div>Il coach sta preparando la tua guida…</div>`
+    : `<div class="card" style="margin-bottom:14px">
+      <h2>📚 Guida di preparazione</h2>
+      <div class="hint">Generata dall’AI su misura di posizione, CV e annuncio impostati nella tab Simulazione.</div>
+      <div class="actions-bar">
+        <button class="btn" ${AI.ok ? '' : 'disabled'} onclick="App.generaGuida()">${g ? '🔄 Rigenera' : '✨ Genera la guida'}</button>
+        ${g ? `<button class="btn ghost" onclick="App.copiaGuida()">📋 Copia</button>` : ''}
+      </div>
+      ${g ? `<div class="hint" style="margin:10px 0 4px">Guida per <b>${esc(g.posizione)}</b> (${esc(g.livello)}) — ${fmtD(g.ts)}</div>
+        ${g.punti_chiave.length ? `<div class="eval-h blue" style="margin-top:10px">Punti chiave</div><ul class="g-ul">${g.punti_chiave.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+        ${g.domande_conoscitivo.length ? `<div class="eval-h blue" style="margin-top:10px">Domande probabili — conoscitivo</div><ul class="g-ul">${g.domande_conoscitivo.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+        ${g.domande_tecniche.length ? `<div class="eval-h blue" style="margin-top:10px">Domande tecniche probabili</div><ul class="g-ul">${g.domande_tecniche.map(x => `<li>${esc(x.domanda)}${x.cosa_ripassare ? ` <span class="rip-tag">📖 ${esc(x.cosa_ripassare)}</span>` : ''}</li>`).join('')}</ul>` : ''}
+        ${g.gap.length ? `<div class="eval-h bad" style="margin-top:10px">Lacune da gestire</div><ul class="g-ul">${g.gap.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+        ${g.domande_da_fare.length ? `<div class="eval-h ok" style="margin-top:10px">Domande da fare al recruiter</div><ul class="g-ul">${g.domande_da_fare.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}` : ''}
+    </div>`;
+
+  App._banca = bancaDomande();
+  const daRivedere = App._banca.filter(d => d.voto != null && d.voto < 6);
+  const lista = App.rf === 'rivedere' ? daRivedere : App._banca;
+  const items = lista.map(d => {
+    const i = App._banca.indexOf(d);
+    return `<details class="q-det">
+    <summary><span class="qd-num">${d.tipo === 'tecnico' ? '🧪' : '💬'}</span> ${esc(d.domanda)}
+      ${d.voto != null ? `<span class="badge ${d.voto >= 6 ? 'ok' : d.voto >= 4 ? 'warn' : 'bad'}">${d.voto}/10</span>` : ''}</summary>
+    <div class="qd-body">
+      <div class="hint">${esc(d.posizione)} (${esc(d.livello)}) · ${fmtD(d.ts)}</div>
+      ${d.commento ? `<p>${esc(d.commento)}</p>` : ''}
+      ${d.risposta_modello ? `<p class="qd-model"><b>💡 Risposta modello:</b> ${esc(d.risposta_modello)}</p>` : ''}
+      <button class="btn small" ${AI.ok ? '' : 'disabled'} onclick="App.riprovaDomanda(${i})">🎯 Riprova questa domanda</button>
+    </div></details>`;
+  }).join('');
+
+  return `<div class="view-head"><div><h1>Ripasso</h1>
+    <div class="sub">La guida di preparazione e tutte le domande incontrate nelle simulazioni</div></div></div>
+  ${guida}
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <h2 style="margin:0">🗂️ Banca domande (${App._banca.length})</h2>
+      <div style="display:flex;gap:6px">
+        <button class="btn small ${App.rf !== 'rivedere' ? '' : 'ghost'}" onclick="App.rf='tutte';render()">Tutte</button>
+        <button class="btn small ${App.rf === 'rivedere' ? '' : 'ghost'}" onclick="App.rf='rivedere';render()">Da rivedere (${daRivedere.length})</button>
+      </div>
+    </div>
+    ${items || '<div class="empty" style="padding:26px"><div class="e-icon">🗂️</div>Completa qualche simulazione: le domande con voto e risposta modello finiranno qui.</div>'}
+  </div>`;
+}
+
+// Riprova una singola domanda: risposta → giudizio secco del giudice tecnico
+App.riprovaDomanda = i => {
+  const d = App._banca?.[i];
+  if (!d) return;
+  openModal(`<h2>🎯 Riprova la domanda</h2>
+  <div class="feedback-box" style="margin:10px 0">${esc(d.domanda)}</div>
+  <textarea id="rip-ans" rows="5" placeholder="Scrivi la tua nuova risposta…"></textarea>
+  <div id="rip-res"></div>
+  <div class="modal-actions">
+    <button class="btn ghost" onclick="closeModal()">Chiudi</button>
+    <button class="btn" id="rip-btn" onclick="App.submitRiprova(${i})">Valuta risposta</button>
+  </div>`);
+};
+App.submitRiprova = async i => {
+  const d = App._banca?.[i];
+  const risposta = ($('#rip-ans')?.value || '').trim();
+  if (!d || !risposta) { toast('Scrivi prima la risposta'); return; }
+  if (App.busy) { toast('Attendi la generazione in corso'); return; }
+  const res = $('#rip-res'), btn = $('#rip-btn');
+  if (btn) btn.disabled = true;
+  if (res) res.innerHTML = `<div class="phase-loading" style="padding:16px"><div class="spinner"></div>Il giudice tecnico sta valutando…</div>`;
+  try {
+    const fake = { posizione: d.posizione, livello: d.livello, annuncio: '', lingua: 'it', stile: 'neutro', cv: '' };
+    const v = await callJSONRetry(buildGiudiceMessages(GIUDICI[1], d.tipo, fake, d.domanda, risposta, null), normalizeGiudice);
+    if (res) res.innerHTML = `<div style="margin-top:10px">
+      <span class="badge ${v.voto >= 6 ? 'ok' : v.voto >= 4 ? 'warn' : 'bad'}" style="font-size:14px">${v.voto}/10</span>
+      <p style="font-size:13.5px;color:var(--ink-2);margin:8px 0">${esc(v.commento)}</p>
+      ${v.risposta_modello ? `<p class="qd-model" style="font-size:13px"><b>💡 Risposta modello:</b> ${esc(v.risposta_modello)}</p>` : ''}</div>`;
+  } catch (e) {
+    if (res) res.innerHTML = `<p style="color:var(--crit-text);font-size:13px">Errore AI: ${esc(e.message || e)} — riprova.</p>`;
+  }
+  if (btn) btn.disabled = false;
 };
 
 // ── Import / export / reset ──

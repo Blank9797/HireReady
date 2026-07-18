@@ -1,13 +1,14 @@
 // ── HireReady: configurazione e prompt per l'LLM locale ─────────────────
 const MODEL_PREFERITO = 'gemma3:4b';
 const LIVELLI = ['Junior', 'Mid', 'Senior', 'Lead'];
-const N_DOMANDE = { conoscitivo: 5, tecnico: 6 }; // default, configurabile nel setup
+const N_DOMANDE = { conoscitivo: 5, tecnico: 6, domande: 3 }; // default, configurabile nel setup
 const SOGLIA = 60; // punteggio minimo per superare una fase
 
 const FASI = [
   { id: 'screening',   label: 'Screening CV',  icon: '📄' },
   { id: 'conoscitivo', label: 'Conoscitivo',   icon: '💬' },
   { id: 'tecnico',     label: 'Tecnico',       icon: '🧪' },
+  { id: 'domande',     label: 'Le tue domande', icon: '🙋' },
   { id: 'report',      label: 'Report',        icon: '🏁' },
 ];
 
@@ -68,6 +69,16 @@ function buildIntervistaSystem(tipo, s) {
   const lingua = sessLingua(s) === 'en'
     ? 'Conduci il colloquio INTERAMENTE in inglese (tutte le tue battute in inglese), come in una selezione internazionale.'
     : 'Conduci il colloquio in italiano.';
+  if (tipo === 'domande') {
+    return `Sei il recruiter alla FINE di un colloquio per la posizione di ${s.posizione}, livello ${s.livello}. Le domande al candidato sono finite: ora è LUI a fare domande a te.${bloccoAnnuncio(s)}
+${STILI[sessStile(s)].prompt}
+${lingua}
+Regole:
+- Alla prima battuta di' che le tue domande sono finite e chiedigli se ha domande per te.
+- Rispondi alle sue domande in modo realistico e concreto (team, progetti, processo di selezione, cultura, crescita): se un dettaglio non è nell'annuncio, inventalo in modo plausibile e coerente.
+- Risposte brevi (2-4 frasi), poi chiedi se ha altre domande.
+- NON valutare le sue domande e non dare giudizi.`;
+  }
   const comune = `Hai già letto il suo CV:
 ---
 ${s.cv}
@@ -125,6 +136,45 @@ Rispondi SOLO con un oggetto JSON valido: {"voto": <0-10>, "commento": "<1-2 fra
       content: `Domanda del recruiter: ${domanda}
 
 Risposta del candidato${tempo ? ` (data in ${tempo}s)` : ''}: ${risposta}`,
+    },
+  ];
+}
+
+// Valutazione delle domande fatte dal candidato al recruiter (fase bonus)
+function buildEvalDomandeMessages(s, transcript) {
+  const testo = transcript
+    .map(m => (m.role === 'assistant' ? 'RECRUITER: ' : 'CANDIDATO: ') + m.content)
+    .join('\n\n');
+  return [
+    {
+      role: 'system',
+      content: `Sei un career coach esperto. A fine colloquio per la posizione di ${s.posizione} (livello ${s.livello}) il candidato ha fatto delle domande al recruiter: valuta la QUALITÀ delle sue domande.${bloccoAnnuncio(s)}
+Domande forti: mostrano interesse genuino, preparazione sull'azienda/ruolo, orientamento alla crescita e all'impatto. Domande deboli: solo ferie/orari/stipendio come prima domanda, generiche, o nessuna domanda.
+Rispondi SOLO con un oggetto JSON valido:
+{"punteggio": <0-100>, "feedback": "<2-3 frasi rivolte al candidato (dai del tu)>", "punti_forza": ["..."], "aree_miglioramento": ["..."], "domande_modello": ["<3 esempi di ottime domande da fare per questa posizione>"]}
+Tutti i testi in italiano.`,
+    },
+    { role: 'user', content: `Trascrizione della fase finale:\n\n${testo}` },
+  ];
+}
+
+// Guida di preparazione pre-colloquio generata da posizione + CV + annuncio
+function buildGuidaMessages(s) {
+  return [
+    {
+      role: 'system',
+      content: `Sei un career coach esperto. Prepara una guida di preparazione al colloquio per la posizione di ${s.posizione} (livello ${s.livello}), su misura del CV del candidato${sessAnnuncio(s) ? ' e dell\'annuncio' : ''}.
+Rispondi SOLO con un oggetto JSON valido:
+{"punti_chiave": ["<4-6 cose da sapere/valorizzare in questo colloquio>"],
+"domande_conoscitivo": ["<5 domande motivazionali/comportamentali probabili>"],
+"domande_tecniche": [{"domanda": "<domanda tecnica probabile>", "cosa_ripassare": "<argomento da studiare>"}, … 5-6 voci],
+"gap": ["<lacune del CV rispetto alla posizione, con come compensarle a voce>"],
+"domande_da_fare": ["<3 ottime domande da fare al recruiter>"]}
+Tutti i testi in italiano, concreti e specifici per questa posizione.`,
+    },
+    {
+      role: 'user',
+      content: `Posizione: ${s.posizione}\nLivello: ${s.livello}\n${bloccoAnnuncio(s)}\nCV del candidato:\n${s.cv}`,
     },
   ];
 }
