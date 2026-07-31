@@ -1,0 +1,46 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "▶ Avvia HireReady (porta 4190)",
+      "detail": "Serve l'app su http://localhost:4190 — richiede Python",
+      "type": "shell",
+      "command": "python -m http.server 4190",
+      "windows": { "command": "python -m http.server 4190" },
+      "osx": { "command": "python3 -m http.server 4190" },
+      "linux": { "command": "python3 -m http.server 4190" },
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "▶ Avvia HireReady con Node (alternativa a Python)",
+      "detail": "Stessa cosa ma con Node.js: http://localhost:4190",
+      "type": "shell",
+      "command": "npx --yes serve --listen 4190 .",
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "⬇ Scarica il modello AI (gemma3:4b)",
+      "detail": "Una volta sola: scarica il modello usato dal recruiter AI",
+      "type": "shell",
+      "command": "ollama pull gemma3:4b",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "🧠 Avvia Ollama (solo se non è già attivo)",
+      "detail": "Su Windows/Mac di solito parte da solo con l'app. Errore 'address already in use' = è già acceso, tutto ok",
+      "type": "shell",
+      "command": "ollama serve",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    }
+  ]
+}

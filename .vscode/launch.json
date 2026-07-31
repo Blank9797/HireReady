@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "🌐 Apri HireReady in Chrome",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:4190",
+      "webRoot": "${workspaceFolder}"
+    },
+    {
+      "name": "🌐 Apri HireReady in Edge",
+      "type": "msedge",
+      "request": "launch",
+      "url": "http://localhost:4190",
+      "webRoot": "${workspaceFolder}"
+    }
+  ]
+}

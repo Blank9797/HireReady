@@ -44,6 +44,30 @@ Oltre ad allenarti, HireReady tiene traccia delle **candidature vere**: calendar
 
 > Suggerimento: con modelli più grandi (`gemma3:12b`, `qwen3:8b`…) la qualità dei giudizi sale parecchio; l'app li propone automaticamente nel menu modello. Con più modelli installati, la giuria diventa multi-modello.
 
+### Windows (con Visual Studio Code)
+
+```powershell
+git clone https://github.com/Blank9797/HireReady.git
+cd HireReady
+code .
+```
+
+Nel repo c'è già `.vscode/tasks.json`: apri la cartella in VS Code e premi **Ctrl+Shift+B** →
+l'app parte su `http://localhost:4190`. Con **F5** si apre in Chrome o Edge.
+Le altre voci sono in *Terminale → Esegui attività…*: scarica modello, avvia Ollama.
+
+Senza VS Code, dal terminale (PowerShell o CMD), dentro la cartella del progetto:
+
+```powershell
+python -m http.server 4190
+```
+
+Se Python non c'è, in alternativa con Node: `npx serve --listen 4190 .`
+
+Ollama per Windows si installa da [ollama.com/download](https://ollama.com/download) e parte
+da solo (icona nella barra delle applicazioni). `Error: address already in use` significa
+solo che è già acceso.
+
 ## Architettura
 
 ```
